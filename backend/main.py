@@ -43,6 +43,12 @@ def setup_logging() -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
 
+    # Mirror application logs (including tracebacks) to stdout so they appear in the
+    # platform log stream, not only in Application Insights.
+    import sys
+    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+        root_logger.addHandler(logging.StreamHandler(sys.stdout))
+
     # Azure Application Insights handler
     if settings.applicationinsights_connection_string:
         ai_handler = AzureLogHandler(

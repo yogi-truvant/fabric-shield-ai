@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from azure.cosmos.aio import CosmosClient
 from azure.cosmos.exceptions import CosmosHttpResponseError
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import ManagedIdentityCredential
 
 from backend.config import get_settings
 from backend.models.schemas import (
@@ -36,7 +36,7 @@ class CosmosStore:
     def _get_client(self) -> CosmosClient:
         if CosmosStore._client is None:
             if settings.cosmos_use_managed_identity:
-                credential = DefaultAzureCredential()
+                credential = ManagedIdentityCredential()
                 CosmosStore._client = CosmosClient(
                     url=settings.cosmos_endpoint,
                     credential=credential,

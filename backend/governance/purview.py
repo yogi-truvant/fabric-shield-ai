@@ -8,7 +8,7 @@ import structlog
 from typing import Optional
 
 import httpx
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import ManagedIdentityCredential
 
 from backend.config import get_settings
 from backend.models.schemas import PiiEntityType
@@ -47,7 +47,7 @@ class PurviewClient:
     """
 
     def __init__(self):
-        self._credential = DefaultAzureCredential()
+        self._credential = ManagedIdentityCredential()
         self._endpoint = settings.purview_endpoint.rstrip("/")
 
     async def _get_token(self) -> str:
