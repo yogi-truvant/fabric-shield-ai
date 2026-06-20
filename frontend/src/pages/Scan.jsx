@@ -5,10 +5,11 @@
 
 import React, { useEffect, useState } from "react";
 import {
-  Alert, Box, Button, Card, CardContent, Chip, CircularProgress, FormControl,
-  InputLabel, LinearProgress, MenuItem, Select, Stack, TextField, Typography,
+  Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress,
+  FormControl, FormHelperText, InputLabel, LinearProgress, ListItemText, MenuItem,
+  OutlinedInput, Select, Stack, Typography,
 } from "@mui/material";
-import { PlayArrow, Storage, VerifiedUser } from "@mui/icons-material";
+import { PlayArrow, Refresh, Storage, VerifiedUser } from "@mui/icons-material";
 import { useMsal } from "@azure/msal-react";
 import { useSnackbar } from "notistack";
 import { useNavigate } from "react-router-dom";
@@ -16,6 +17,7 @@ import { scanApi, connectionsApi } from "../services/api";
 import RoleGuard from "../components/RoleGuard";
 
 const STATUS_COLOR = { running: "info", completed: "success", failed: "error" };
+const SELECT_ALL = "__select_all__";
 
 export default function Scan() {
   const { accounts } = useMsal();
@@ -25,7 +27,10 @@ export default function Scan() {
 
   const [connections, setConnections] = useState([]);
   const [connName, setConnName] = useState("");
-  const [schemasInput, setSchemasInput] = useState("dbo");
+  const [schemaOptions, setSchemaOptions] = useState([]);
+  const [selectedSchemas, setSelectedSchemas] = useState([]);
+  const [loadingSchemas, setLoadingSchemas] = useState(false);
+  const [schemaError, setSchemaError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [activeScan, setActiveScan] = useState(null);
@@ -36,6 +41,45 @@ export default function Scan() {
     connectionsApi.list().then((r) => setConnections(r.data)).catch(() => {});
     scanApi.listScans(10).then((r) => setRecentScans(r.data)).catch(() => {}).finally(() => setLoadingScans(false));
   }, []);
+
+  const selectedConn = connections.find((c) => c.name === connName);
+
+  // Load schemas whenever the chosen connection changes.
+  const loadSchemas = (name) => {
+    if (!name) return;
+    const conn = connections.find((c) => c.name === name);
+    setLoadingSchemas(true);
+    setSchemaError(null);
+    setSchemaOptions([]);
+    setSelectedSchemas([]);
+    connectionsApi
+      .schemas(name, conn?.database_type || "azure_sql")
+      .then((r) => {
+        const opts = r.data || [];
+        setSchemaOptions(opts);
+        // Pre-select all by default for convenience.
+        setSelectedSchemas(opts);
+        if (opts.length === 0) setSchemaError("No schemas with tables found on this connection.");
+      })
+      .catch((err) => setSchemaError(err.message || "Could not load schemas"))
+      .finally(() => setLoadingSchemas(false));
+  };
+
+  const handleConnChange = (name) => {
+    setConnName(name);
+    loadSchemas(name);
+  };
+
+  const handleSchemaChange = (e) => {
+    const value = e.target.value;
+    if (value.includes(SELECT_ALL)) {
+      setSelectedSchemas(selectedSchemas.length === schemaOptions.length ? [] : schemaOptions);
+      return;
+    }
+    setSelectedSchemas(typeof value === "string" ? value.split(",") : value);
+  };
+
+  const allSelected = schemaOptions.length > 0 && selectedSchemas.length === schemaOptions.length;
 
   useEffect(() => {
     if (!activeScan || activeScan.status !== "running") return;
@@ -55,8 +99,6 @@ export default function Scan() {
     return () => clearInterval(interval);
   }, [activeScan, enqueueSnackbar]);
 
-  const selectedConn = connections.find((c) => c.name === connName);
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
@@ -66,7 +108,7 @@ export default function Scan() {
         tenant_id: tenantId,
         connection_name: connName,
         database_type: selectedConn?.database_type || "azure_sql",
-        schema_names: schemasInput.split(",").map((s) => s.trim()).filter(Boolean),
+        schema_names: selectedSchemas,
       };
       const res = await scanApi.triggerScan(payload);
       const initial = { scan_id: res.data.scan_id, status: "running", started_at: new Date().toISOString(), connection_name: connName };
@@ -107,7 +149,7 @@ export default function Scan() {
                   <Stack spacing={2.5}>
                     <FormControl fullWidth required>
                       <InputLabel>Connection</InputLabel>
-                      <Select value={connName} label="Connection" onChange={(e) => setConnName(e.target.value)}>
+                      <Select value={connName} label="Connection" onChange={(e) => handleConnChange(e.target.value)}>
                         {connections.map((c) => (
                           <MenuItem key={c.name} value={c.name}>
                             {c.name} - {c.server}/{c.database} ({c.auth_mode === "sql" ? "SQL" : "SP"})
@@ -115,13 +157,54 @@ export default function Scan() {
                         ))}
                       </Select>
                     </FormControl>
-                    <TextField label="Schemas to Scan" value={schemasInput}
-                      onChange={(e) => setSchemasInput(e.target.value)}
-                      helperText="Comma-separated schema names (e.g. dbo, clinical, billing)" />
+
+                    <FormControl fullWidth required disabled={!connName || loadingSchemas || schemaOptions.length === 0}>
+                      <InputLabel>Schemas to Scan</InputLabel>
+                      <Select
+                        multiple
+                        value={selectedSchemas}
+                        onChange={handleSchemaChange}
+                        input={<OutlinedInput label="Schemas to Scan" />}
+                        renderValue={(selected) =>
+                          allSelected ? "All schemas" : selected.join(", ")
+                        }
+                        endAdornment={
+                          loadingSchemas ? <CircularProgress size={18} sx={{ mr: 3 }} /> : null
+                        }
+                      >
+                        <MenuItem value={SELECT_ALL}>
+                          <Checkbox
+                            checked={allSelected}
+                            indeterminate={selectedSchemas.length > 0 && !allSelected}
+                          />
+                          <ListItemText primary="Select All" primaryTypographyProps={{ fontWeight: 600 }} />
+                        </MenuItem>
+                        {schemaOptions.map((s) => (
+                          <MenuItem key={s} value={s}>
+                            <Checkbox checked={selectedSchemas.indexOf(s) > -1} />
+                            <ListItemText primary={s} />
+                          </MenuItem>
+                        ))}
+                      </Select>
+                      <FormHelperText>
+                        {!connName
+                          ? "Choose a connection to load its schemas"
+                          : loadingSchemas
+                          ? "Loading schemas..."
+                          : schemaError
+                          ? schemaError
+                          : `${selectedSchemas.length} of ${schemaOptions.length} schema(s) selected`}
+                        {connName && !loadingSchemas && (
+                          <Button size="small" startIcon={<Refresh />} sx={{ ml: 1, minWidth: 0 }}
+                            onClick={() => loadSchemas(connName)}>Reload</Button>
+                        )}
+                      </FormHelperText>
+                    </FormControl>
+
                     {error && <Alert severity="error">{error}</Alert>}
                     <Button type="submit" variant="contained" size="large"
                       startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : <PlayArrow />}
-                      disabled={submitting || !connName}>
+                      disabled={submitting || !connName || selectedSchemas.length === 0}>
                       {submitting ? "Starting Scan..." : "Start Scan"}
                     </Button>
                   </Stack>

@@ -141,6 +141,24 @@ async def test_connection(
     return ConnectionTestResult(success=ok, message=msg, table_count=count)
 
 
+@router.get("/connections/{name}/schemas", response_model=List[str], dependencies=[RequireAnalyst])
+async def list_connection_schemas(
+    name: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+    db_type: DatabaseType = DatabaseType.azure_sql,
+) -> List[str]:
+    """List the schemas (containing tables) for a connection, to drive the Scan picker.
+    Metadata-only: reads INFORMATION_SCHEMA only, never any row data."""
+    connector = DatabaseConnector(customer_tenant_id=user.tenant_id)
+    try:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, lambda: connector.list_schemas(name, db_type)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("connections.list_schemas_failed", name=name, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Could not list schemas: {exc}")
+
+
 @router.delete("/connections/{name}", dependencies=[RequireAdmin])
 async def delete_connection(name: str, user: Annotated[UserContext, Depends(get_current_user)]) -> dict:
     """Remove a connection and its secrets."""

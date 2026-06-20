@@ -155,6 +155,20 @@ class DatabaseConnector:
             logger.warning("db_connector.test_failed", connection=connection_name, error=str(exc))
             return False, str(exc), None
 
+    def list_schemas(self, connection_name: str, db_type: DatabaseType) -> List[str]:
+        """Return the schemas that actually contain base tables (metadata-only).
+        Used to populate the Scan page schema picker. No row data is read."""
+        sql = (
+            "SELECT DISTINCT TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA"
+        )
+        with self.connect(connection_name, db_type) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            schemas = [row[0] for row in cursor.fetchall() if row[0]]
+        logger.info("db_connector.list_schemas", tenant_id=self.customer_tenant_id, schema_count=len(schemas))
+        return schemas
+
     def get_schema_metadata(
         self, connection_name: str, db_type: DatabaseType, schema_names: List[str],
         include_tables: Optional[List[str]] = None, exclude_tables: Optional[List[str]] = None,

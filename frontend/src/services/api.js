@@ -68,6 +68,7 @@ export const connectionsApi = {
   list: () => apiClient.get("/connections"),
   create: (payload) => apiClient.post("/connections", payload),
   test: (name, dbType = "azure_sql") => apiClient.post(`/connections/${name}/test`, null, { params: { db_type: dbType } }),
+  schemas: (name, dbType = "azure_sql") => apiClient.get(`/connections/${name}/schemas`, { params: { db_type: dbType } }),
   remove: (name) => apiClient.delete(`/connections/${name}`),
 };
 
