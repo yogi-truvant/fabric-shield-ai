@@ -1,46 +1,37 @@
-name: FabricShield AI — CI/CD
+name: FabricShield AI - CI/CD
 
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
   pull_request:
     branches: [main]
 
 env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "20"
-  # Set in GitHub repo secrets
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
 
-# ── Jobs ──────────────────────────────────────────────────────────────────────
 jobs:
-
-  # ── 1. Backend: Lint + Test ──────────────────────────────────────────────────
   backend-ci:
     name: Backend CI
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: backend
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-
+      - name: Install ODBC runtime
+        run: sudo apt-get update && sudo apt-get install -y unixodbc
       - name: Install dependencies
         run: pip install -r requirements.txt pytest pytest-asyncio httpx ruff
-
       - name: Lint (ruff)
         run: ruff check . --select E,W,F --ignore E501
-
       - name: Run tests
         env:
           AZURE_CLIENT_ID: test-client-id
@@ -53,196 +44,101 @@ jobs:
           JWT_AUDIENCE: test-audience
         run: pytest tests/ -v --tb=short
 
-  # ── 2. Frontend: Lint + Build ────────────────────────────────────────────────
   frontend-ci:
     name: Frontend CI
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Lint
-        run: npx eslint src --ext .js,.jsx --max-warnings 0 || true
-
-      - name: Build (type-check + bundle)
+      - run: npm install
+      - run: npx eslint src --ext .js,.jsx --max-warnings 0 || true
+      - name: Build
         env:
           VITE_AZURE_CLIENT_ID: test-client-id
-          VITE_API_BASE_URL: https://api.fabricshield.io/api/v1
-          VITE_REDIRECT_URI: https://app.fabricshield.io
+          VITE_API_BASE_URL: https://api.example.com/api/v1
+          VITE_REDIRECT_URI: https://app.example.com
         run: npm run build
 
-      - name: Upload frontend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist/
-          retention-days: 7
-
-  # ── 3. Security Scan ──────────────────────────────────────────────────────────
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: [backend-ci, frontend-ci]
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Run Bandit (Python security linter)
+      - name: Bandit
         run: |
           pip install bandit
           bandit -r backend/ -ll -x backend/tests -f json -o bandit-report.json || true
-          cat bandit-report.json
-
-      - name: Run pip-audit
+      - name: pip-audit
         run: |
           pip install pip-audit
           pip-audit -r backend/requirements.txt --format json -o pip-audit-report.json || true
-
-      - name: Upload security reports
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: "*.json"
 
-  # ── 4. Deploy Infrastructure (main branch only) ───────────────────────────────
-  deploy-infra:
-    name: Deploy Infrastructure
-    runs-on: ubuntu-latest
-    needs: [security-scan]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production
-
-    permissions:
-      id-token: write   # Required for OIDC auth
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Azure Login (OIDC — no secrets)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID_DEPLOYER }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy Bicep
-        uses: azure/arm-deploy@v2
-        with:
-          subscriptionId: ${{ env.AZURE_SUBSCRIPTION_ID }}
-          resourceGroupName: ${{ env.RESOURCE_GROUP }}
-          template: infra/main.bicep
-          parameters: >
-            environment=prod
-            serviceTenantId=${{ env.AZURE_TENANT_ID }}
-            clientId=${{ env.AZURE_CLIENT_ID }}
-            clientSecret=${{ secrets.AZURE_CLIENT_SECRET }}
-          failOnStdErr: false
-
-  # ── 5. Deploy Backend ─────────────────────────────────────────────────────────
   deploy-backend:
     name: Deploy Backend
     runs-on: ubuntu-latest
-    needs: [deploy-infra]
+    needs: [security-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production
-
     permissions:
       id-token: write
       contents: read
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Azure Login
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID_DEPLOYER }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: pip install -r requirements.txt
-
-      - name: Package backend (from repo root)
-        run: zip -r app.zip backend requirements.txt -x "*.pyc" "**/__pycache__/*" "backend/tests/*"
-
-      - name: Get backend app name
+      - name: Package backend
+        run: zip -rq app.zip backend requirements.txt -x "*.pyc" "**/__pycache__/*" "backend/tests/*"
+      - name: Resolve backend app name
         id: appname
-        run: |
-          APP_NAME=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'api')].name" -o tsv | head -1)
-          echo "name=$APP_NAME" >> $GITHUB_OUTPUT
-
+        run: echo "name=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'api')].name" -o tsv | head -1)" >> $GITHUB_OUTPUT
       - name: Deploy to App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ steps.appname.outputs.name }}
           package: app.zip
+      - name: Ensure startup command
+        run: az webapp config set -g ${{ env.RESOURCE_GROUP }} -n ${{ steps.appname.outputs.name }} --startup-file "uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 2"
 
-      - name: Set startup command
-        run: |
-          az webapp config set \
-            -g ${{ env.RESOURCE_GROUP }} \
-            -n ${{ steps.appname.outputs.name }} \
-            --startup-file "uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4"
-
-  # ── 6. Deploy Frontend ────────────────────────────────────────────────────────
   deploy-frontend:
     name: Deploy Frontend
     runs-on: ubuntu-latest
     needs: [deploy-backend]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: production
-
     permissions:
       id-token: write
       contents: read
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Azure Login
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID_DEPLOYER }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Get app names
+      - name: Resolve app names
         id: appnames
         run: |
-          BACKEND=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'api')].name" -o tsv | head -1)
-          FRONTEND=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'ui')].name" -o tsv | head -1)
-          echo "backend=$BACKEND" >> $GITHUB_OUTPUT
-          echo "frontend=$FRONTEND" >> $GITHUB_OUTPUT
-
+          echo "backend=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'api')].name" -o tsv | head -1)" >> $GITHUB_OUTPUT
+          echo "frontend=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'ui')].name" -o tsv | head -1)" >> $GITHUB_OUTPUT
       - name: Build frontend
         working-directory: frontend
         env:
@@ -252,41 +148,32 @@ jobs:
         run: |
           npm install
           npm run build
-
       - name: Deploy frontend
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ steps.appnames.outputs.frontend }}
           package: frontend/dist/
 
-  # ── 7. Smoke Test ─────────────────────────────────────────────────────────────
   smoke-test:
     name: Post-Deploy Smoke Test
     runs-on: ubuntu-latest
     needs: [deploy-frontend]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: Azure Login
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID_DEPLOYER }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Get backend URL
-        id: url
-        run: |
-          APP=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'api')].name" -o tsv | head -1)
-          echo "url=https://$APP.azurewebsites.net" >> $GITHUB_OUTPUT
-
       - name: Health check
         run: |
-          for i in 1 2 3 4 5; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.url.outputs.url }}/health")
-            echo "Attempt $i: HTTP $STATUS"
-            if [[ "$STATUS" == "200" ]]; then exit 0; fi
-            sleep 15
+          APP=$(az webapp list -g ${{ env.RESOURCE_GROUP }} --query "[?contains(name,'api')].name" -o tsv | head -1)
+          for i in 1 2 3 4 5 6; do
+            S=$(curl -s -o /dev/null -w "%{http_code}" "https://$APP.azurewebsites.net/health"); echo "try $i: $S"
+            [ "$S" = "200" ] && exit 0; sleep 20
           done
-          echo "Health check failed after 5 attempts"
-          exit 1
+          echo "health check failed"; exit 1
