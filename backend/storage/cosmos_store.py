@@ -152,6 +152,24 @@ class CosmosStore:
             counts[item["status"]] = item["cnt"]
         return counts
 
+    async def delete_pending_approvals(self, tenant_id: str, connection_name: str) -> int:
+        """Remove still-PENDING approvals for a connection so a re-scan supersedes them
+        instead of accumulating. Approved/rejected/masked records are preserved for audit."""
+        query = (
+            "SELECT c.id FROM c WHERE c.tenant_id = @tid "
+            "AND c.connection_name = @conn AND c.status = @pending"
+        )
+        params = [
+            {"name": "@tid", "value": tenant_id},
+            {"name": "@conn", "value": connection_name},
+            {"name": "@pending", "value": ApprovalStatus.pending.value},
+        ]
+        container = self._container(settings.cosmos_container_approvals)
+        ids = [item["id"] async for item in container.query_items(query=query, parameters=params)]
+        for _id in ids:
+            await container.delete_item(item=_id, partition_key=tenant_id)
+        return len(ids)
+
     # ── Audit Logs ────────────────────────────────────────────────────────────
 
     async def append_audit(self, entry: AuditLog) -> None:

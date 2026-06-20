@@ -76,8 +76,11 @@ async def _run_scan(
         # Persist scan result
         await store.upsert_scan(scan_result)
 
-        # Create approval records for each flagged column
+        # Create approval records for each flagged column.
+        # First supersede any still-pending approvals for this connection so repeat
+        # scans don't accumulate duplicates (approved/masked records are preserved).
         from backend.models.schemas import ApprovalRecord, ApprovalStatus
+        await store.delete_pending_approvals(request.tenant_id, request.connection_name)
         for col in pii_columns:
             approval = ApprovalRecord(
                 tenant_id=request.tenant_id,

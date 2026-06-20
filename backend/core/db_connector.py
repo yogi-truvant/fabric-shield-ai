@@ -148,7 +148,10 @@ class DatabaseConnector:
         try:
             with self.connect(connection_name, db_type) as conn:
                 cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES")
+                cur.execute(
+                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_TYPE = 'BASE TABLE'"
+                )
                 count = cur.fetchone()[0]
             return True, "Connection succeeded (metadata read).", count
         except Exception as exc:  # noqa: BLE001 - surfaced to the caller
