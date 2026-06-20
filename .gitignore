@@ -1,0 +1,30 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# ── Node / frontend ──
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+
+# ── Secrets / env ──
+.env
+.env.*
+*.pem
+roles.json
+
+# ── OS / editor ──
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ── Build artifacts ──
+*.zip

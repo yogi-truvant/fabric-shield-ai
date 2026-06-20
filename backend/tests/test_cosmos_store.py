@@ -1,0 +1,76 @@
+"""
+Unit tests for CosmosStore.delete_pending_approvals — the idempotency guard that
+stops repeat scans from accumulating duplicate approval records.
+
+These tests mock the Cosmos container, so no live database is required.
+"""
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from backend.storage.cosmos_store import CosmosStore
+
+
+class _AsyncIter:
+    """Minimal async-iterable wrapper so we can fake container.query_items(...)."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def __aiter__(self):
+        async def _gen():
+            for item in self._items:
+                yield item
+
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_delete_pending_approvals_deletes_each_returned_id():
+    store = CosmosStore()
+    container = MagicMock()
+    container.query_items = MagicMock(
+        return_value=_AsyncIter([{"id": "a"}, {"id": "b"}, {"id": "c"}])
+    )
+    container.delete_item = AsyncMock()
+
+    with patch.object(store, "_container", return_value=container):
+        deleted = await store.delete_pending_approvals("tenant-1", "conn-1")
+
+    assert deleted == 3
+    assert container.delete_item.await_count == 3
+    # Every delete must be scoped to the tenant partition key.
+    for call in container.delete_item.await_args_list:
+        assert call.kwargs["partition_key"] == "tenant-1"
+
+
+@pytest.mark.asyncio
+async def test_delete_pending_approvals_filters_by_connection_and_pending():
+    store = CosmosStore()
+    container = MagicMock()
+    container.query_items = MagicMock(return_value=_AsyncIter([]))
+    container.delete_item = AsyncMock()
+
+    with patch.object(store, "_container", return_value=container):
+        await store.delete_pending_approvals("tenant-9", "sales-db")
+
+    # Inspect the parameters passed to the Cosmos query.
+    _, kwargs = container.query_items.call_args
+    params = {p["name"]: p["value"] for p in kwargs["parameters"]}
+    assert params["@tid"] == "tenant-9"
+    assert params["@conn"] == "sales-db"
+    assert params["@pending"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_delete_pending_approvals_noop_when_nothing_pending():
+    store = CosmosStore()
+    container = MagicMock()
+    container.query_items = MagicMock(return_value=_AsyncIter([]))
+    container.delete_item = AsyncMock()
+
+    with patch.object(store, "_container", return_value=container):
+        deleted = await store.delete_pending_approvals("t", "c")
+
+    assert deleted == 0
+    container.delete_item.assert_not_awaited()
