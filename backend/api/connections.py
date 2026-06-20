@@ -1,0 +1,159 @@
+"""
+FabricShield AI - Connections API
+Manage data-source connections (hybrid auth). Metadata + secrets stored in Key Vault:
+  tenant-{tenant}-{name}-server / -database / -meta(JSON) / -sqlpassword
+Requires the backend managed identity to have Key Vault Secrets Officer (read+write).
+"""
+
+import asyncio
+import json
+from datetime import datetime, timezone
+from typing import Annotated, List, Optional
+
+import structlog
+from azure.core.exceptions import ResourceNotFoundError
+from azure.identity import ManagedIdentityCredential
+from azure.keyvault.secrets import SecretClient
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from backend.auth.entra import RequireAdmin, RequireAnalyst, get_current_user
+from backend.config import get_settings
+from backend.core.db_connector import DatabaseConnector
+from backend.models.schemas import (
+    ConnectionAuthMode, ConnectionCreateRequest, ConnectionInfo,
+    ConnectionTestResult, DatabaseType, UserContext,
+)
+
+logger = structlog.get_logger(__name__)
+settings = get_settings()
+router = APIRouter()
+
+_kv: Optional[SecretClient] = None
+
+
+def _kv_client() -> SecretClient:
+    global _kv
+    if _kv is None:
+        _kv = SecretClient(vault_url=settings.keyvault_url, credential=ManagedIdentityCredential())
+    return _kv
+
+
+def _get(name: str) -> Optional[str]:
+    try:
+        return _kv_client().get_secret(name).value
+    except ResourceNotFoundError:
+        return None
+
+
+@router.get("/connections", response_model=List[ConnectionInfo], dependencies=[RequireAnalyst])
+async def list_connections(user: Annotated[UserContext, Depends(get_current_user)]) -> List[ConnectionInfo]:
+    """List the tenant's registered connections (no passwords returned)."""
+    pfx = f"tenant-{user.tenant_id}-"
+    kv = _kv_client()
+
+    def _list() -> List[ConnectionInfo]:
+        out: List[ConnectionInfo] = []
+        for prop in kv.list_properties_of_secrets():
+            n = prop.name or ""
+            if not (n.startswith(pfx) and n.endswith("-server")):
+                continue
+            name = n[len(pfx):-len("-server")]
+            info = {
+                "name": name,
+                "server": _get(f"{pfx}{name}-server") or "",
+                "database": _get(f"{pfx}{name}-database") or "",
+                "database_type": "azure_sql",
+                "auth_mode": "service_principal",
+            }
+            meta = _get(f"{pfx}{name}-meta")
+            if meta:
+                try:
+                    m = json.loads(meta)
+                    info.update(
+                        database_type=m.get("database_type", "azure_sql"),
+                        auth_mode=m.get("auth_mode", "service_principal"),
+                        sql_username=m.get("sql_username"),
+                        created_by=m.get("created_by"),
+                        created_at=m.get("created_at"),
+                    )
+                except (ValueError, TypeError):
+                    pass
+            out.append(ConnectionInfo(**info))
+        return out
+
+    return await asyncio.get_event_loop().run_in_executor(None, _list)
+
+
+@router.post("/connections", response_model=ConnectionInfo, status_code=status.HTTP_201_CREATED,
+             dependencies=[RequireAdmin])
+async def create_connection(
+    req: ConnectionCreateRequest,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> ConnectionInfo:
+    """Register a connection. SQL-auth passwords are stored in Key Vault, never returned."""
+    if req.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="tenant_id does not match authenticated tenant")
+    if req.auth_mode == ConnectionAuthMode.sql and not (req.sql_username and req.sql_password):
+        raise HTTPException(status_code=400, detail="sql_username and sql_password are required for SQL auth")
+
+    pfx = f"tenant-{user.tenant_id}-{req.name}"
+    kv = _kv_client()
+    created_at = datetime.now(timezone.utc).isoformat()
+    meta = {
+        "database_type": req.database_type.value,
+        "auth_mode": req.auth_mode.value,
+        "sql_username": req.sql_username,
+        "created_by": user.email or user.oid,
+        "created_at": created_at,
+    }
+
+    def _write():
+        kv.set_secret(f"{pfx}-server", req.server)
+        kv.set_secret(f"{pfx}-database", req.database)
+        kv.set_secret(f"{pfx}-meta", json.dumps(meta))
+        if req.auth_mode == ConnectionAuthMode.sql:
+            kv.set_secret(f"{pfx}-sqlpassword", req.sql_password)
+
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, _write)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("connections.write_failed", name=req.name, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Could not store connection: {exc}")
+
+    logger.info("connections.created", tenant=user.tenant_id, name=req.name, auth_mode=req.auth_mode.value)
+    return ConnectionInfo(
+        name=req.name, server=req.server, database=req.database, database_type=req.database_type,
+        auth_mode=req.auth_mode, sql_username=req.sql_username, created_by=meta["created_by"], created_at=created_at,
+    )
+
+
+@router.post("/connections/{name}/test", response_model=ConnectionTestResult, dependencies=[RequireAnalyst])
+async def test_connection(
+    name: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+    db_type: DatabaseType = DatabaseType.azure_sql,
+) -> ConnectionTestResult:
+    """Metadata-only reachability check for a registered connection."""
+    connector = DatabaseConnector(customer_tenant_id=user.tenant_id)
+    ok, msg, count = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: connector.test_connection(name, db_type)
+    )
+    return ConnectionTestResult(success=ok, message=msg, table_count=count)
+
+
+@router.delete("/connections/{name}", dependencies=[RequireAdmin])
+async def delete_connection(name: str, user: Annotated[UserContext, Depends(get_current_user)]) -> dict:
+    """Remove a connection and its secrets."""
+    pfx = f"tenant-{user.tenant_id}-{name}"
+    kv = _kv_client()
+
+    def _delete():
+        for suffix in ("-server", "-database", "-meta", "-sqlpassword"):
+            try:
+                kv.begin_delete_secret(f"{pfx}{suffix}")
+            except ResourceNotFoundError:
+                pass
+
+    await asyncio.get_event_loop().run_in_executor(None, _delete)
+    logger.info("connections.deleted", tenant=user.tenant_id, name=name)
+    return {"status": "deleted", "name": name}

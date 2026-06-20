@@ -1,0 +1,38 @@
+{
+  "name": "fabricshield-ui",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@azure/msal-browser": "^3.14.0",
+    "@azure/msal-react": "^2.1.0",
+    "@emotion/react": "^11.11.4",
+    "@emotion/styled": "^11.11.5",
+    "@mui/icons-material": "^5.15.18",
+    "@mui/material": "^5.15.18",
+    "@mui/x-data-grid": "^7.3.2",
+    "@mui/x-date-pickers": "^7.3.2",
+    "axios": "^1.7.2",
+    "dayjs": "^1.11.11",
+    "powerbi-client": "^2.23.1",
+    "powerbi-client-react": "^1.4.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "recharts": "^2.12.7",
+    "notistack": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.2.11",
+    "eslint": "^9.2.0",
+    "@eslint/js": "^9.2.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src"
+  }
+}

@@ -1,0 +1,40 @@
+# ── FastAPI Core ──────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+pydantic-settings==2.3.0
+
+# ── Authentication ────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+httpx==0.27.0
+cachetools==5.3.3
+
+# ── Database ──────────────────────────────────────────────────────────────────
+pyodbc==5.1.0
+# Azure SQL / Fabric with Managed Identity
+azure-identity==1.17.0
+# Cosmos DB
+azure-cosmos==4.7.0
+
+
+# ── PII Detection ───────────────────────────────────────────────────────────
+# Detection is METADATA-ONLY (column name + type). No Presidio / spaCy / row data.
+
+# ── Governance ────────────────────────────────────────────────────────────────
+azure-purview-catalog==1.0.0b4
+azure-purview-scanning==1.0.0b2
+
+# ── Power BI ──────────────────────────────────────────────────────────────────
+msal==1.29.0
+
+# ── Key Vault ────────────────────────────────────────────────────────────────
+azure-keyvault-secrets==4.8.0
+
+# ── Observability ────────────────────────────────────────────────────────────
+opencensus-ext-azure==1.1.13
+structlog==24.2.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-multipart==0.0.9
+tenacity==8.3.0
+cryptography==42.0.8

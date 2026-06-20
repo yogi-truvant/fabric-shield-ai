@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "prod"
+    },
+    "location": {
+      "value": "eastus2"
+    },
+    "serviceTenantId": {
+      "value": "__REPLACE_WITH_YOUR_TENANT_ID__"
+    },
+    "clientId": {
+      "value": "__REPLACE_WITH_APP_REGISTRATION_CLIENT_ID__"
+    },
+    "clientSecret": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/__SUB_ID__/resourceGroups/rg-fabricshield-prod/providers/Microsoft.KeyVault/vaults/__PRE_EXISTING_KV__"
+        },
+        "secretName": "azure-client-secret"
+      }
+    },
+    "powerBiWorkspaceId": {
+      "value": ""
+    },
+    "powerBiReportId": {
+      "value": ""
+    },
+    "corsOrigins": {
+      "value": "https://app.fabricshield.io"
+    }
+  }
+}
