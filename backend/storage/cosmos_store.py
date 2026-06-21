@@ -153,16 +153,22 @@ class CosmosStore:
         return items
 
     async def count_approvals_by_status(self, tenant_id: str) -> dict:
-        query = """
-        SELECT c.status, COUNT(1) as cnt
-        FROM c WHERE c.tenant_id = @tid
-        GROUP BY c.status
-        """
-        counts = {}
-        async for item in self._container(settings.cosmos_container_approvals).query_items(
-            query=query, parameters=[{"name": "@tid", "value": tenant_id}]
-        ):
-            counts[item["status"]] = item["cnt"]
+        """Counts per status for the KPI dashboard.
+
+        Uses a targeted COUNT per status rather than GROUP BY: Cosmos GROUP BY can return
+        empty under some query plans / continuation handling, which silently zeroed the
+        dashboard tiles. SELECT VALUE COUNT(1) always returns exactly one number."""
+        container = self._container(settings.cosmos_container_approvals)
+        counts: dict = {}
+        for status in ApprovalStatus:
+            query = "SELECT VALUE COUNT(1) FROM c WHERE c.tenant_id = @tid AND c.status = @s"
+            params = [
+                {"name": "@tid", "value": tenant_id},
+                {"name": "@s", "value": status.value},
+            ]
+            counts[status.value] = 0
+            async for value in container.query_items(query=query, parameters=params):
+                counts[status.value] = int(value)
         return counts
 
     async def delete_pending_approvals(self, tenant_id: str, connection_name: str) -> int:

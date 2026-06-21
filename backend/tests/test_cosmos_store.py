@@ -63,6 +63,24 @@ async def test_delete_pending_approvals_filters_by_connection_and_pending():
 
 
 @pytest.mark.asyncio
+async def test_count_approvals_by_status_counts_per_status():
+    store = CosmosStore()
+    container = MagicMock()
+
+    def _query(query, parameters):
+        s = {p["name"]: p["value"] for p in parameters}["@s"]
+        return _AsyncIter([{"PENDING": 18, "MASKED": 5}.get(s, 0)])
+
+    container.query_items = MagicMock(side_effect=_query)
+    with patch.object(store, "_container", return_value=container):
+        counts = await store.count_approvals_by_status("tenant-1")
+
+    assert counts["PENDING"] == 18
+    assert counts["MASKED"] == 5
+    assert counts["APPROVED"] == 0   # statuses with no rows come back as 0, not missing
+
+
+@pytest.mark.asyncio
 async def test_delete_pending_approvals_noop_when_nothing_pending():
     store = CosmosStore()
     container = MagicMock()
