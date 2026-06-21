@@ -62,6 +62,19 @@ class CosmosStore:
         item["id"] = scan.scan_id
         await self._container(settings.cosmos_container_scans).upsert_item(item)
 
+    async def count_scans_since(self, tenant_id: str, since_iso: str) -> int:
+        """Count scans started on/after an ISO timestamp (used for monthly plan limits)."""
+        query = "SELECT VALUE COUNT(1) FROM c WHERE c.tenant_id = @tid AND c.started_at >= @since"
+        params = [
+            {"name": "@tid", "value": tenant_id},
+            {"name": "@since", "value": since_iso},
+        ]
+        async for value in self._container(settings.cosmos_container_scans).query_items(
+            query=query, parameters=params
+        ):
+            return int(value)
+        return 0
+
     async def get_scan(self, tenant_id: str, scan_id: str) -> Optional[ScanResult]:
         try:
             item = await self._container(settings.cosmos_container_scans).read_item(
@@ -205,6 +218,21 @@ class CosmosStore:
         ):
             items.append(AuditLog(**item))
         return items
+
+    async def count_audit(self, tenant_id: str, action_filter: Optional[str] = None) -> int:
+        """Total audit records for the tenant (for accurate pagination), independent of page size."""
+        conditions = ["c.tenant_id = @tid"]
+        params = [{"name": "@tid", "value": tenant_id}]
+        if action_filter:
+            conditions.append("c.action = @action")
+            params.append({"name": "@action", "value": action_filter})
+        where = " AND ".join(conditions)
+        query = f"SELECT VALUE COUNT(1) FROM c WHERE {where}"
+        async for value in self._container(settings.cosmos_container_audit).query_items(
+            query=query, parameters=params
+        ):
+            return int(value)
+        return 0
 
     # ── Tenant Config ─────────────────────────────────────────────────────────
 

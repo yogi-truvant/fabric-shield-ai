@@ -20,7 +20,13 @@ aiohttp==3.9.5
 
 
 # ── PII Detection ───────────────────────────────────────────────────────────
-# Detection is METADATA-ONLY (column name + type). No Presidio / spaCy / row data.
+# Default detection is METADATA-ONLY (column name + type) — no row data read.
+# Opt-in content scan (content_scan=True) additionally samples values IN MEMORY:
+#   Tier 1 = deterministic value validators (pure Python, no deps).
+#   Tier 2 = spaCy NER for free-text names/addresses (optional; degrades gracefully
+#            to Tier 1 if the model is unavailable). No Presidio.
+spacy==3.7.5
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
 
 # ── Governance ────────────────────────────────────────────────────────────────
 azure-purview-catalog==1.0.0b4

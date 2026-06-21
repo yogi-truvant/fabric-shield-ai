@@ -53,6 +53,11 @@ def _odbc_quote(value: str) -> str:
     return "{" + str(value).replace("}", "}}") + "}"
 
 
+def _bracket(identifier: str) -> str:
+    """Safely bracket-quote a SQL identifier (schema/table/column); escapes embedded ]."""
+    return "[" + str(identifier).replace("]", "]]") + "]"
+
+
 def _conn_str_token(server: str, database: str) -> str:
     return (
         f"DRIVER={ODBC_DRIVER};SERVER={server};DATABASE={database};"
@@ -198,6 +203,36 @@ class DatabaseConnector:
                 })
         logger.info("db_connector.schema_metadata", tenant_id=self.customer_tenant_id, column_count=len(results))
         return results
+
+    def fetch_table_sample(
+        self, connection_name: str, db_type: DatabaseType, schema: str, table: str,
+        columns: List[str], limit: int = 100,
+    ) -> Dict[str, List[str]]:
+        """OPT-IN content sampling. Reads up to `limit` rows for the given columns and
+        returns their non-null values to the caller, IN MEMORY only.
+
+        This is the single, deliberate row-reading path in the product. It is reached
+        only when a scan sets content_scan=True (explicit client consent). Raw values are
+        never logged, cached, or persisted here — only row/column counts are logged."""
+        if not columns:
+            return {}
+        n = max(1, min(int(limit), 1000))
+        cols_sql = ", ".join(_bracket(c) for c in columns)
+        sql = f"SELECT TOP ({n}) {cols_sql} FROM {_bracket(schema)}.{_bracket(table)}"
+        out: Dict[str, List[str]] = {c: [] for c in columns}
+        with self.connect(connection_name, db_type) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            colnames = [d[0] for d in cursor.description]
+            for row in cursor.fetchall():
+                for cn, val in zip(colnames, row):
+                    if val is not None and cn in out:
+                        out[cn].append(str(val))
+        logger.info(
+            "db_connector.sampled", tenant_id=self.customer_tenant_id,
+            table=f"{schema}.{table}", columns=len(columns), rows_cap=n,
+        )  # NOTE: no values logged — counts only
+        return out
 
     def execute_ddl(self, connection_name: str, db_type: DatabaseType, ddl: str) -> None:
         with self.connect(connection_name, db_type) as conn:

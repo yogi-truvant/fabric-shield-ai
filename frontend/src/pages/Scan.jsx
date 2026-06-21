@@ -6,8 +6,8 @@
 import React, { useEffect, useState } from "react";
 import {
   Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress,
-  FormControl, FormHelperText, InputLabel, LinearProgress, ListItemText, MenuItem,
-  OutlinedInput, Select, Stack, Typography,
+  Divider, FormControl, FormControlLabel, FormHelperText, InputLabel, LinearProgress,
+  ListItemText, MenuItem, OutlinedInput, Select, Stack, Switch, Typography,
 } from "@mui/material";
 import { PlayArrow, Refresh, Storage, VerifiedUser } from "@mui/icons-material";
 import { useMsal } from "@azure/msal-react";
@@ -31,6 +31,7 @@ export default function Scan() {
   const [selectedSchemas, setSelectedSchemas] = useState([]);
   const [loadingSchemas, setLoadingSchemas] = useState(false);
   const [schemaError, setSchemaError] = useState(null);
+  const [contentScan, setContentScan] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [activeScan, setActiveScan] = useState(null);
@@ -109,6 +110,7 @@ export default function Scan() {
         connection_name: connName,
         database_type: selectedConn?.database_type || "azure_sql",
         schema_names: selectedSchemas,
+        content_scan: contentScan,
       };
       const res = await scanApi.triggerScan(payload);
       const initial = { scan_id: res.data.scan_id, status: "running", started_at: new Date().toISOString(), connection_name: connName };
@@ -132,7 +134,8 @@ export default function Scan() {
         </Typography>
 
         <Alert icon={<VerifiedUser />} severity="success" variant="outlined" sx={{ mb: 3 }}>
-          FabricShield reads only column names and data types. It never reads, samples, logs, or stores a single row of your data.
+          By default FabricShield reads only column names and data types - never a row of your data.
+          Deep content scan (opt-in, below) samples values in memory with consent and never logs or stores them.
         </Alert>
 
         <Box sx={{ display: "grid", gridTemplateColumns: { md: "1fr 1fr" }, gap: 3 }}>
@@ -200,6 +203,19 @@ export default function Scan() {
                         )}
                       </FormHelperText>
                     </FormControl>
+
+                    <Divider />
+                    <Box>
+                      <FormControlLabel
+                        control={<Switch checked={contentScan} onChange={(e) => setContentScan(e.target.checked)} />}
+                        label="Deep content scan (sample values)"
+                      />
+                      <FormHelperText sx={{ mt: -0.5 }}>
+                        Off by default. When on, FabricShield samples column values in memory to
+                        detect PII the column names miss (e.g. a card column named &quot;CC&quot;).
+                        Values are never logged or stored. Requires data-owner consent.
+                      </FormHelperText>
+                    </Box>
 
                     {error && <Alert severity="error">{error}</Alert>}
                     <Button type="submit" variant="contained" size="large"

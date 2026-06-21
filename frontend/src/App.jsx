@@ -14,6 +14,7 @@ import { getTheme } from "./theme";
 import { ColorModeContext } from "./colorMode";
 import { loginRequest } from "./auth/msalConfig";
 import Layout from "./components/Layout";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Dashboard from "./pages/Dashboard";
 import Scan from "./pages/Scan";
 import Approvals from "./pages/Approvals";
@@ -91,14 +92,16 @@ export default function App() {
           <AuthenticatedTemplate>
             <BrowserRouter>
               <Layout>
-                <Routes>
-                  <Route path="/" element={<Dashboard />} />
-                  <Route path="/scan" element={<Scan />} />
-                  <Route path="/connections" element={<Connections />} />
-                  <Route path="/approvals" element={<Approvals />} />
-                  <Route path="/audit" element={<Audit />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
+                <ErrorBoundary>
+                  <Routes>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/scan" element={<Scan />} />
+                    <Route path="/connections" element={<Connections />} />
+                    <Route path="/approvals" element={<Approvals />} />
+                    <Route path="/audit" element={<Audit />} />
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </ErrorBoundary>
               </Layout>
             </BrowserRouter>
           </AuthenticatedTemplate>

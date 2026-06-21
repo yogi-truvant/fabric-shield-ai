@@ -32,15 +32,17 @@ async def get_audit_logs(
     Records are immutable — no delete or update is exposed.
     """
     store = CosmosStore()
+    action_filter = action.value if action else None
     logs = await store.list_audit(
         tenant_id=user.tenant_id,
         limit=min(limit, 500),
         offset=offset,
-        action_filter=action.value if action else None,
+        action_filter=action_filter,
     )
+    total = await store.count_audit(tenant_id=user.tenant_id, action_filter=action_filter)
     return AuditLogListResponse(
         logs=logs,
-        total=len(logs),  # Full count requires a separate COUNT query — implement as needed
+        total=total,
         page=offset // max(limit, 1),
         page_size=limit,
     )

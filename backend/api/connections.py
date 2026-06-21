@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from backend.auth.entra import RequireAdmin, RequireAnalyst, get_current_user
 from backend.config import get_settings
 from backend.core.db_connector import DatabaseConnector
+from backend.core.limits import enforce_can_add_connection
 from backend.models.schemas import (
     ConnectionAuthMode, ConnectionCreateRequest, ConnectionInfo,
     ConnectionTestResult, DatabaseType, UserContext,
@@ -96,8 +97,23 @@ async def create_connection(
     if req.auth_mode == ConnectionAuthMode.sql and not (req.sql_username and req.sql_password):
         raise HTTPException(status_code=400, detail="sql_username and sql_password are required for SQL auth")
 
-    pfx = f"tenant-{user.tenant_id}-{req.name}"
+    # Plan enforcement (fail-open for internal/test tenants and on lookup errors).
     kv = _kv_client()
+    tpfx = f"tenant-{user.tenant_id}-"
+
+    def _count_connections() -> int:
+        return sum(
+            1 for p in kv.list_properties_of_secrets()
+            if (p.name or "").startswith(tpfx) and (p.name or "").endswith("-server")
+        )
+
+    try:
+        current = await asyncio.get_event_loop().run_in_executor(None, _count_connections)
+    except Exception:  # noqa: BLE001
+        current = 0
+    await enforce_can_add_connection(user.tenant_id, current)
+
+    pfx = f"tenant-{user.tenant_id}-{req.name}"
     created_at = datetime.now(timezone.utc).isoformat()
     meta = {
         "database_type": req.database_type.value,

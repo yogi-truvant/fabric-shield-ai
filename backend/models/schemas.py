@@ -21,9 +21,10 @@ class DatabaseType(str, Enum):
 
 
 class DetectionSource(str, Enum):
-    rule = "rule"
-    ml = "ml"
-    both = "both"
+    rule = "rule"          # column-name pattern
+    ml = "ml"              # spaCy NER over sampled values (free-text names/addresses)
+    both = "both"          # name rule + content agree
+    content = "content"    # deterministic value validator (checksum/format) over sampled values
 
 
 class PiiEntityType(str, Enum):
@@ -92,6 +93,15 @@ class ScanRequest(TenantAwareBase):
     schema_names: List[str] = Field(default=["dbo"], description="DB schemas to scan")
     include_tables: Optional[List[str]] = Field(None, description="Allowlist of table names")
     exclude_tables: Optional[List[str]] = Field(None, description="Denylist of table names")
+    content_scan: bool = Field(
+        default=False,
+        description="Opt-in: sample column VALUES in-memory (never stored) to detect PII by "
+                    "content, independent of column names. Requires client consent.",
+    )
+    content_sample_size: int = Field(
+        default=100, ge=10, le=1000,
+        description="Number of rows sampled per table when content_scan is enabled.",
+    )
 
 
 class PiiColumnResult(BaseModel):
@@ -105,6 +115,10 @@ class PiiColumnResult(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     detection_source: DetectionSource
     recommended_mask: MaskType
+    sample_match_pct: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0,
+        description="Fraction of sampled values that matched (content scan only). None for name-only.",
+    )
 
 
 class ScanResult(TenantAwareBase):
