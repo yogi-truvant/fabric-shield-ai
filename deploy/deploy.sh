@@ -25,6 +25,9 @@ ENVIRONMENT="prod"
 DEPLOY_BACKEND=true
 DEPLOY_FRONTEND=true
 DEPLOY_INFRA=true
+WORKERS=2          # uvicorn workers — sized for Basic/B1 (1 vCPU, 1.75GB). Each worker
+                   # lazily loads the spaCy model (~250MB), so keep low on small SKUs.
+                   # Raise (e.g. --workers 4) on PremiumV3 / multi-core plans.
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -39,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --skip-infra)       DEPLOY_INFRA=false; shift ;;
     --skip-backend)     DEPLOY_BACKEND=false; shift ;;
     --skip-frontend)    DEPLOY_FRONTEND=false; shift ;;
+    --workers)          WORKERS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1"; exit 1 ;;
   esac
 done
@@ -98,11 +102,20 @@ if $DEPLOY_INFRA; then
       clientSecret="$CLIENT_SECRET" \
     --output json)
 
-  BACKEND_APP_NAME=$(echo "$DEPLOY_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['properties']['outputs']['backendUrl']['value'].split('//')[-1].split('.')[0])")
-  FRONTEND_APP_NAME=$(echo "$DEPLOY_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['properties']['outputs']['frontendUrl']['value'].split('//')[-1].split('.')[0])")
-  BACKEND_URL=$(echo "$DEPLOY_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['properties']['outputs']['backendUrl']['value'])")
-  FRONTEND_URL=$(echo "$DEPLOY_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['properties']['outputs']['frontendUrl']['value'])")
-  KV_NAME=$(echo "$DEPLOY_OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['properties']['outputs']['keyVaultName']['value'])")
+  # Parse all Bicep outputs in a single python pass (one process, not five).
+  eval "$(echo "$DEPLOY_OUTPUT" | python3 -c '
+import sys, json
+o = json.load(sys.stdin)["properties"]["outputs"]
+b = o["backendUrl"]["value"]
+f = o["frontendUrl"]["value"]
+kv = o["keyVaultName"]["value"]
+host = lambda u: u.split("//")[-1].split(".")[0]
+print("BACKEND_URL=" + b)
+print("FRONTEND_URL=" + f)
+print("BACKEND_APP_NAME=" + host(b))
+print("FRONTEND_APP_NAME=" + host(f))
+print("KV_NAME=" + kv)
+')"
 
   echo "      Backend:  $BACKEND_URL"
   echo "      Frontend: $FRONTEND_URL"
@@ -160,7 +173,7 @@ if $DEPLOY_BACKEND; then
   az webapp config set \
     --resource-group "$RESOURCE_GROUP" \
     --name "$BACKEND_APP_NAME" \
-    --startup-file "uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4" \
+    --startup-file "uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers $WORKERS" \
     --output none
 
   echo "      Backend deployed to: https://$BACKEND_APP_NAME.azurewebsites.net"
@@ -179,7 +192,8 @@ VITE_API_BASE_URL=https://$BACKEND_APP_NAME.azurewebsites.net/api/v1
 VITE_REDIRECT_URI=https://$FRONTEND_APP_NAME.azurewebsites.net
 EOF
 
-  npm install --silent
+  # Reproducible install when a lockfile exists; fall back to install otherwise.
+  if [[ -f package-lock.json ]]; then npm ci --silent; else npm install --silent; fi
   npm run build
 
   # Deploy dist/ as static site
@@ -207,13 +221,20 @@ fi
 # ── 7. Post-deployment ────────────────────────────────────────────────────────
 echo ""
 echo "[ 7/7 ] Post-deployment checks..."
-sleep 10  # Allow App Service to start
-
-HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$BACKEND_APP_NAME.azurewebsites.net/health" || echo "000")
-if [[ "$HEALTH_STATUS" == "200" ]]; then
+# Cold start (incl. server-side pip build + first spaCy load) can take a minute+,
+# so poll instead of a single early check.
+HEALTH_URL="https://$BACKEND_APP_NAME.azurewebsites.net/health"
+HEALTH_OK=false
+for i in $(seq 1 10); do
+  HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+  if [[ "$HEALTH_STATUS" == "200" ]]; then HEALTH_OK=true; break; fi
+  echo "      health attempt $i/10: HTTP $HEALTH_STATUS (warming up)..."; sleep 15
+done
+if $HEALTH_OK; then
   echo "      ✅ Backend health check: PASSED"
 else
-  echo "      ⚠️  Backend health check returned HTTP $HEALTH_STATUS (may still be starting)"
+  echo "      ⚠️  Backend still not healthy after ~2.5 min — check the log stream:"
+  echo "         az webapp log tail -g $RESOURCE_GROUP -n $BACKEND_APP_NAME"
 fi
 
 echo ""
