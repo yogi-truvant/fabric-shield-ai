@@ -177,6 +177,27 @@ class DatabaseConnector:
         logger.info("db_connector.list_schemas", tenant_id=self.customer_tenant_id, schema_count=len(schemas))
         return schemas
 
+    def get_masked_columns(self, connection_name: str, db_type: DatabaseType) -> set:
+        """Return the set of (schema, table, column) that currently have a mask applied,
+        read from sys.masked_columns. Metadata-only — the DB is the source of truth for
+        mask state, so a scan reflects reality even after FabricShield's records are cleared."""
+        sql = (
+            "SELECT s.name, t.name, c.name "
+            "FROM sys.masked_columns mc "
+            "JOIN sys.columns c ON mc.object_id = c.object_id AND mc.column_id = c.column_id "
+            "JOIN sys.tables t ON mc.object_id = t.object_id "
+            "JOIN sys.schemas s ON t.schema_id = s.schema_id "
+            "WHERE mc.is_masked = 1"
+        )
+        out = set()
+        with self.connect(connection_name, db_type) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                out.add((row[0], row[1], row[2]))
+        logger.info("db_connector.masked_columns", tenant_id=self.customer_tenant_id, count=len(out))
+        return out
+
     def get_schema_metadata(
         self, connection_name: str, db_type: DatabaseType, schema_names: List[str],
         include_tables: Optional[List[str]] = None, exclude_tables: Optional[List[str]] = None,

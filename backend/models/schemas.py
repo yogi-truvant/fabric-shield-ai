@@ -177,6 +177,11 @@ class BulkApprovalResponse(BaseModel):
     errors: List[Dict[str, str]] = []
 
 
+class BulkMaskRequest(BaseModel):
+    approval_ids: Optional[List[str]] = None   # None => mask ALL approved for the tenant
+    connection_name: Optional[str] = None
+
+
 # ─── Masking ─────────────────────────────────────────────────────────────────
 
 class MaskingRequest(TenantAwareBase):

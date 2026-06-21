@@ -9,7 +9,7 @@ import {
   ListItemButton, ListItemIcon, ListItemText, Menu, MenuItem, Toolbar, Tooltip, Typography,
 } from "@mui/material";
 import {
-  Approval, Brightness4, Brightness7, Dashboard, Logout, Menu as MenuIcon,
+  Approval, Brightness4, Brightness7, Dashboard, HelpOutline, Logout, Menu as MenuIcon,
   Security, Shield, Storage, TableChart, VerifiedUser,
 } from "@mui/icons-material";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -26,6 +26,7 @@ const navItems = [
   { label: "Connections", path: "/connections", icon: <Storage />, roles: ["analyst", "approver", "admin"] },
   { label: "Approvals", path: "/approvals", icon: <Approval />, roles: ["analyst", "approver", "admin"] },
   { label: "Audit Log", path: "/audit", icon: <Security />, roles: ["analyst", "approver", "admin"] },
+  { label: "Guide", path: "/guide", icon: <HelpOutline />, roles: ["viewer", "analyst", "approver", "admin"] },
 ];
 
 const ROLE_COLORS = { admin: "error", approver: "warning", analyst: "info", viewer: "default" };

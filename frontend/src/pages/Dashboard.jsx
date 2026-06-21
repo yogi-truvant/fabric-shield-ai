@@ -5,7 +5,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Box, Button, Card, CardContent, Grid, LinearProgress, Skeleton, Typography,
+  Box, Button, Card, CardContent, Grid, LinearProgress, Skeleton, Typography, useTheme,
 } from "@mui/material";
 import { CheckCircle, Error as ErrorIcon, Refresh, TableChart, Timer } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
@@ -41,6 +41,15 @@ function KpiCard({ title, value, subtitle, icon, color = "primary.main", loading
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const theme = useTheme();
+  const axisColor = theme.palette.text.secondary;
+  const gridColor = theme.palette.divider;
+  const tooltipStyle = {
+    backgroundColor: theme.palette.background.paper,
+    border: `1px solid ${theme.palette.divider}`,
+    color: theme.palette.text.primary,
+    borderRadius: 8,
+  };
   const [stats, setStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [dist, setDist] = useState([]);
@@ -80,21 +89,21 @@ export default function Dashboard() {
       <Grid container spacing={2} sx={{ mb: 3 }} justifyContent="center">
         <Grid item xs={12} sm={6} md={3}>
           <KpiCard title="Total PII Columns" value={stats?.total_pii_columns}
-            icon={<TableChart sx={{ fontSize: 32 }} />} loading={statsLoading} onClick={() => navigate("/approvals")} />
+            icon={<TableChart sx={{ fontSize: 32 }} />} loading={statsLoading} onClick={() => navigate("/approvals?status=ALL")} />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <KpiCard title="High Risk (Pending)" value={stats ? `${stats.high_risk_pct}%` : null}
             subtitle={`${stats?.pending ?? 0} columns awaiting approval`} icon={<ErrorIcon sx={{ fontSize: 32 }} />}
-            color="error.main" loading={statsLoading} onClick={() => navigate("/approvals")} />
+            color="error.main" loading={statsLoading} onClick={() => navigate("/approvals?status=PENDING")} />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <KpiCard title="Masking Coverage" value={stats ? `${stats.masking_coverage_pct}%` : null}
             subtitle={`${stats?.masked ?? 0} columns masked`} icon={<CheckCircle sx={{ fontSize: 32 }} />}
-            color="success.main" loading={statsLoading} onClick={() => navigate("/approvals")} />
+            color="success.main" loading={statsLoading} onClick={() => navigate("/approvals?status=MASKED")} />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
           <KpiCard title="Pending Approvals" value={stats?.pending}
-            icon={<Timer sx={{ fontSize: 32 }} />} color="warning.main" loading={statsLoading} onClick={() => navigate("/approvals")} />
+            icon={<Timer sx={{ fontSize: 32 }} />} color="warning.main" loading={statsLoading} onClick={() => navigate("/approvals?status=PENDING")} />
         </Grid>
       </Grid>
 
@@ -125,11 +134,11 @@ export default function Dashboard() {
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie data={dist} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={105}
-                        label={(d) => `${d.name} (${d.value})`}>
+                        label={(d) => `${d.name} (${d.value})`} stroke={theme.palette.background.paper}>
                         {dist.map((e, i) => <Cell key={e.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                       </Pie>
-                      <ReTooltip />
-                      <Legend />
+                      <ReTooltip contentStyle={tooltipStyle} />
+                      <Legend wrapperStyle={{ color: axisColor }} />
                     </PieChart>
                   </ResponsiveContainer>
                 </Box>
@@ -143,10 +152,10 @@ export default function Dashboard() {
                 <Box sx={{ height: 320 }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={byTable} layout="vertical" margin={{ left: 20 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                      <XAxis type="number" allowDecimals={false} />
-                      <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
-                      <ReTooltip />
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={gridColor} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11, fill: axisColor }} stroke={axisColor} />
+                      <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11, fill: axisColor }} stroke={axisColor} />
+                      <ReTooltip contentStyle={tooltipStyle} cursor={{ fill: theme.palette.action.hover }} />
                       <Bar dataKey="value" fill="#0078d4" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>

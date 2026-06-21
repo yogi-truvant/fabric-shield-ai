@@ -19,6 +19,7 @@ from backend.models.schemas import (
     AuditAction,
     BulkApprovalRequest,
     BulkApprovalResponse,
+    BulkMaskRequest,
     DatabaseType,
     MaskingResult,
     UserContext,
@@ -92,10 +93,16 @@ async def bulk_approve_reject(
                 failed += 1
                 continue
 
-            if record.status not in (ApprovalStatus.pending,):
+            # Allowed transitions: approve from pending/rejected; reject from
+            # pending/approved. MASKED is terminal (use the DB to unmask).
+            allowed = {
+                "approve": {ApprovalStatus.pending, ApprovalStatus.rejected},
+                "reject": {ApprovalStatus.pending, ApprovalStatus.approved},
+            }
+            if record.status not in allowed.get(request.action, set()):
                 errors.append({
                     "approval_id": approval_id,
-                    "error": f"Already in status {record.status.value}",
+                    "error": f"Cannot {request.action} a column in status {record.status.value}",
                 })
                 failed += 1
                 continue
@@ -104,6 +111,7 @@ async def bulk_approve_reject(
                 record.status = ApprovalStatus.approved
                 record.approved_by = user.oid
                 record.approved_at = datetime.now(timezone.utc)
+                record.rejection_reason = None
             else:
                 record.status = ApprovalStatus.rejected
                 record.rejection_reason = request.rejection_reason
@@ -134,6 +142,86 @@ async def bulk_approve_reject(
         failed=failed,
         errors=errors,
     )
+
+
+async def _mask_record(store, audit, user, record):
+    """Apply DDM for one APPROVED record, update status + audit. Shared by single + bulk."""
+    if not record.connection_name:
+        return MaskingResult(approval_id=record.approval_id, column_id=record.column_id,
+                             success=False, error="Approval has no connection_name; re-run the scan.")
+    engine = MaskingEngine(tenant_id=user.tenant_id)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: engine.apply_mask(
+            connection_name=record.connection_name, db_type=record.database_type,
+            schema=record.schema_name, table=record.table_name, column=record.column_name,
+            data_type=record.data_type, mask_type=record.recommended_mask,
+        ),
+    )
+    result.approval_id = record.approval_id
+    result.column_id = record.column_id
+    if result.success:
+        record.status = ApprovalStatus.masked
+        record.masked_at = result.masked_at
+        await store.upsert_approval(record)
+        await audit.log(AuditAction.masking_applied, actor=user, resource_id=record.approval_id,
+                        details={"schema": record.schema_name, "table": record.table_name,
+                                 "column": record.column_name, "mask_type": record.recommended_mask.value,
+                                 "ddl": result.ddl_executed})
+        try:
+            from backend.governance.purview import PurviewClient
+            asyncio.create_task(PurviewClient().push_classification(
+                schema=record.schema_name, table=record.table_name, column=record.column_name,
+                entity_type=record.entity_type, tenant_id=user.tenant_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("approvals.purview_push_failed", error=str(exc))
+    else:
+        record.status = ApprovalStatus.masking_failed
+        await store.upsert_approval(record)
+        await audit.log(AuditAction.masking_failed, actor=user, resource_id=record.approval_id,
+                        details={"error": result.error}, success=False)
+    return result
+
+
+@router.post(
+    "/approvals/bulk-mask",
+    response_model=BulkApprovalResponse,
+    summary="Mask multiple approved columns at once",
+    dependencies=[RequireApprover],
+)
+async def bulk_mask(
+    user: Annotated[UserContext, Depends(get_current_user)],
+    request: BulkMaskRequest,
+) -> BulkApprovalResponse:
+    """Mask the given approved columns, or ALL approved columns for the tenant when no
+    ids are supplied. Skips anything not in APPROVED status."""
+    store = CosmosStore()
+    audit = AuditLogger()
+    if request.approval_ids:
+        records = []
+        for aid in request.approval_ids:
+            r = await store.get_approval(tenant_id=user.tenant_id, approval_id=aid)
+            if r and r.status == ApprovalStatus.approved:
+                records.append(r)
+    else:
+        approved = await store.list_approvals(
+            tenant_id=user.tenant_id, status_filter=ApprovalStatus.approved, limit=500
+        )
+        records = [r for r in approved
+                   if not request.connection_name or r.connection_name == request.connection_name]
+
+    succeeded = 0
+    failed = 0
+    errors: List[dict] = []
+    for record in records:
+        res = await _mask_record(store, audit, user, record)
+        if res.success:
+            succeeded += 1
+        else:
+            failed += 1
+            errors.append({"approval_id": record.approval_id, "error": res.error or "mask failed"})
+    return BulkApprovalResponse(processed=len(records), succeeded=succeeded, failed=failed, errors=errors)
 
 
 @router.post(
@@ -167,82 +255,12 @@ async def apply_masking(
             detail=f"Cannot mask — approval is in status '{record.status.value}'. Must be APPROVED.",
         )
 
-    # Use the connection + data type captured at scan time; query params are optional overrides.
-    conn_name = connection_name or record.connection_name
-    effective_db_type = db_type if connection_name else record.database_type
-    if not conn_name:
-        raise HTTPException(
-            status_code=400,
-            detail="Approval has no connection_name; re-run the scan so it is persisted.",
-        )
+    # Optional per-call connection override (otherwise use what was captured at scan time).
+    if connection_name:
+        record.connection_name = connection_name
+        record.database_type = db_type
 
-    engine = MaskingEngine(tenant_id=user.tenant_id)
-
-    # Run sync masking in a thread pool (pyodbc is blocking)
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: engine.apply_mask(
-            connection_name=conn_name,
-            db_type=effective_db_type,
-            schema=record.schema_name,
-            table=record.table_name,
-            column=record.column_name,
-            data_type=record.data_type,
-            mask_type=record.recommended_mask,
-        ),
-    )
-
-    result.approval_id = approval_id
-    result.column_id = record.column_id
-
-    if result.success:
-        record.status = ApprovalStatus.masked
-        record.masked_at = result.masked_at
-        await store.upsert_approval(record)
-
-        await audit.log(
-            AuditAction.masking_applied,
-            actor=user,
-            resource_id=approval_id,
-            details={
-                "schema": record.schema_name,
-                "table": record.table_name,
-                "column": record.column_name,
-                "mask_type": record.recommended_mask.value,
-                "ddl": result.ddl_executed,
-            },
-        )
-
-        # Push classification to Purview (non-blocking)
-        try:
-            from backend.governance.purview import PurviewClient
-            purview = PurviewClient()
-            asyncio.create_task(
-                purview.push_classification(
-                    schema=record.schema_name,
-                    table=record.table_name,
-                    column=record.column_name,
-                    entity_type=record.entity_type,
-                    tenant_id=user.tenant_id,
-                )
-            )
-        except Exception as exc:
-            logger.warning("approvals.purview_push_failed", error=str(exc))
-
-    else:
-        record.status = ApprovalStatus.masking_failed
-        await store.upsert_approval(record)
-
-        await audit.log(
-            AuditAction.masking_failed,
-            actor=user,
-            resource_id=approval_id,
-            details={"error": result.error},
-            success=False,
-        )
-
-    return result
+    return await _mask_record(store, audit, user, record)
 
 
 @router.get(

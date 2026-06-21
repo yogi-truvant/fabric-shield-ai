@@ -116,9 +116,20 @@ async def _run_scan(
         # Persist scan result
         await store.upsert_scan(scan_result)
 
+        # The DB's actual mask state is the source of truth (metadata-only, best-effort:
+        # if the principal can't read sys.masked_columns we just skip the sync).
+        try:
+            masked_set = await loop.run_in_executor(
+                None,
+                lambda: connector.get_masked_columns(request.connection_name, request.database_type),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scan.masked_columns_failed", scan_id=scan_result.scan_id, error=str(exc))
+            masked_set = set()
+
         # Reconcile detected columns against existing approvals: keep already-decided
-        # columns (approved/masked/rejected stay as-is, never resurfaced), de-duplicate,
-        # drop stale pending, and create pending only for genuinely NEW columns.
+        # columns (approved/masked stay; rejected re-surface), de-duplicate, drop stale
+        # pending, create pending only for NEW columns, and reflect DB mask state.
         from backend.models.schemas import ApprovalRecord, ApprovalStatus
         existing = await store.list_all_approvals_for_connection(
             request.tenant_id, request.connection_name
@@ -131,12 +142,23 @@ async def _run_scan(
         detected_keys = [(c.schema_name, c.table_name, c.column_name) for c in pii_columns]
         to_create, to_delete = reconcile(detected_keys, existing_lite)
 
+        deleted_ids = set(to_delete)
         for _id in to_delete:
             await store.delete_approval(request.tenant_id, _id)
+
+        # Sync surviving records to MASKED when the database shows them masked.
+        for a in existing:
+            if a.approval_id in deleted_ids:
+                continue
+            if (a.schema_name, a.table_name, a.column_name) in masked_set and a.status != ApprovalStatus.masked:
+                a.status = ApprovalStatus.masked
+                a.approved_at = a.approved_at or datetime.now(timezone.utc)
+                await store.upsert_approval(a)
 
         col_by_key = {(c.schema_name, c.table_name, c.column_name): c for c in pii_columns}
         for key in to_create:
             col = col_by_key[key]
+            is_masked = key in masked_set
             approval = ApprovalRecord(
                 tenant_id=request.tenant_id,
                 scan_id=scan_result.scan_id,
@@ -151,7 +173,8 @@ async def _run_scan(
                 connection_name=request.connection_name,
                 data_type=col.data_type,
                 database_type=request.database_type,
-                status=ApprovalStatus.pending,
+                status=ApprovalStatus.masked if is_masked else ApprovalStatus.pending,
+                approved_at=datetime.now(timezone.utc) if is_masked else None,
             )
             await store.upsert_approval(approval)
 

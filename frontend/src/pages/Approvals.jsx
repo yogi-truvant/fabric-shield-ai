@@ -1,6 +1,7 @@
 /**
  * FabricShield AI - Approvals
- * Data grid with risk-colored entities, confidence bars, bulk approve/reject, masking.
+ * Data grid with risk-colored entities, confidence bars, detection source,
+ * bulk approve/reject/mask, and clear.
  */
 
 import React, { useCallback, useEffect, useState } from "react";
@@ -12,6 +13,7 @@ import { Check, Close, DeleteSweep, Lock, Refresh } from "@mui/icons-material";
 import { DataGrid, GridToolbar } from "@mui/x-data-grid";
 import { useMsal } from "@azure/msal-react";
 import { useSnackbar } from "notistack";
+import { useSearchParams } from "react-router-dom";
 import { approvalsApi } from "../services/api";
 import RoleGuard from "../components/RoleGuard";
 import { useRole } from "../hooks/useRole";
@@ -19,7 +21,7 @@ import { useRole } from "../hooks/useRole";
 const STATUS_CONFIG = {
   PENDING: { color: "warning", label: "Pending" },
   APPROVED: { color: "info", label: "Approved" },
-  REJECTED: { color: "error", label: "Rejected" },
+  REJECTED: { color: "default", label: "Rejected" },
   MASKED: { color: "success", label: "Masked" },
   MASKING_FAILED: { color: "error", label: "Mask Failed" },
 };
@@ -30,17 +32,28 @@ const ENTITY_COLORS = {
   LOCATION: "#008272", MEDICAL_RECORD: "#d13438", NPI: "#5c2d91", DEA: "#5c2d91", PHI_GENERIC: "#d13438",
 };
 
+const SOURCE_CONFIG = {
+  both: { label: "Name + Content", color: "success" },
+  content: { label: "Content", color: "info" },
+  ml: { label: "Content (NER)", color: "info" },
+  rule: { label: "Name", color: "default" },
+};
+
 export default function Approvals() {
   const { accounts } = useMsal();
   const { hasRole } = useRole();
   const { enqueueSnackbar } = useSnackbar();
+  const [searchParams] = useSearchParams();
   const tenantId = accounts[0]?.tenantId || "";
   const canApprove = hasRole("approver", "admin");
 
+  const initialStatus = searchParams.get("status");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState([]);
-  const [statusFilter, setStatusFilter] = useState("PENDING");
+  const [statusFilter, setStatusFilter] = useState(
+    initialStatus === "ALL" ? null : (initialStatus || "PENDING")
+  );
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectDialog, setRejectDialog] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
@@ -74,6 +87,26 @@ export default function Approvals() {
     }
   };
 
+  const handleBulkMask = async () => {
+    if (!selected.length) return;
+    setActionLoading(true);
+    try {
+      const res = await approvalsApi.bulkMask({ approval_ids: selected });
+      const d = res.data;
+      if (d.processed === 0) {
+        enqueueSnackbar("Nothing to mask - select Approved columns first", { variant: "info" });
+      } else {
+        enqueueSnackbar(`${d.succeeded} masked, ${d.failed} failed`, { variant: d.failed > 0 ? "warning" : "success" });
+      }
+      setSelected([]);
+      load();
+    } catch (err) {
+      enqueueSnackbar(err.message, { variant: "error" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const handleClear = async () => {
     try {
       const r = await approvalsApi.clear();
@@ -89,14 +122,22 @@ export default function Approvals() {
 
   const columns = [
     { field: "schema_name", headerName: "Table", width: 170, valueGetter: (_, row) => `${row.schema_name}.${row.table_name}` },
-    { field: "column_name", headerName: "Column", width: 150, flex: 1 },
+    { field: "column_name", headerName: "Column", width: 140, flex: 1 },
     {
-      field: "entity_type", headerName: "PII Type", width: 150,
+      field: "entity_type", headerName: "PII Type", width: 140,
       renderCell: (p) => <Chip size="small" label={p.value}
         sx={{ backgroundColor: ENTITY_COLORS[p.value] || "#605e5c", color: "white", fontWeight: 700, fontSize: "0.7rem" }} />,
     },
     {
-      field: "confidence", headerName: "Confidence", width: 130,
+      field: "detection_source", headerName: "Source", width: 150,
+      renderCell: (p) => {
+        const cfg = SOURCE_CONFIG[p.value] || { label: p.value || "-", color: "default" };
+        const pct = p.row.sample_match_pct != null ? ` ${Math.round(p.row.sample_match_pct * 100)}%` : "";
+        return <Chip size="small" variant="outlined" color={cfg.color} label={cfg.label + pct} />;
+      },
+    },
+    {
+      field: "confidence", headerName: "Confidence", width: 120,
       renderCell: (p) => (
         <Box sx={{ width: "100%" }}>
           <Typography variant="caption" fontWeight={600}>{Math.round(p.value * 100)}%</Typography>
@@ -106,7 +147,7 @@ export default function Approvals() {
         </Box>
       ),
     },
-    { field: "recommended_mask", headerName: "Mask", width: 90 },
+    { field: "recommended_mask", headerName: "Mask", width: 80 },
     {
       field: "status", headerName: "Status", width: 120,
       renderCell: (p) => {
@@ -148,7 +189,7 @@ export default function Approvals() {
 
         <Box sx={{ display: "flex", gap: 1, mb: 2, flexWrap: "wrap", alignItems: "center" }}>
           {[null, "PENDING", "APPROVED", "MASKED", "REJECTED"].map((s) => (
-            <Chip key={s ?? "all"} label={s ?? "All"} onClick={() => setStatusFilter(s)}
+            <Chip key={s ?? "all"} label={s ? STATUS_CONFIG[s].label : "All"} onClick={() => { setSelected([]); setStatusFilter(s); }}
               color={statusFilter === s ? "primary" : "default"} variant={statusFilter === s ? "filled" : "outlined"} />
           ))}
           <Box sx={{ flex: 1 }} />
@@ -165,9 +206,11 @@ export default function Approvals() {
                     onClick={() => handleBulkAction("approve")} disabled={actionLoading}>Approve {selected.length}</Button>
                   <Button size="small" color="error" variant="contained" startIcon={<Close />}
                     onClick={() => setRejectDialog(true)} disabled={actionLoading}>Reject {selected.length}</Button>
+                  <Button size="small" color="secondary" variant="contained" startIcon={<Lock />}
+                    onClick={handleBulkMask} disabled={actionLoading}>Mask {selected.length}</Button>
                 </Box>
               }>
-              {selected.length} column(s) selected
+              {selected.length} column(s) selected — Mask applies only to Approved columns
             </Alert>
           </Box>
         )}
@@ -177,8 +220,9 @@ export default function Approvals() {
             rows={rows} columns={columns} loading={loading}
             checkboxSelection={canApprove} disableRowSelectionOnClick
             onRowSelectionModelChange={(ids) => setSelected(ids)} rowSelectionModel={selected}
-            pageSizeOptions={[25, 50, 100]} initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
-            slots={{ toolbar: GridToolbar }} slotProps={{ toolbar: { showQuickFilter: true } }} density="comfortable"
+            pageSizeOptions={[25, 50, 100]}
+            initialState={{ pagination: { paginationModel: { pageSize: 25 } }, density: "comfortable" }}
+            slots={{ toolbar: GridToolbar }} slotProps={{ toolbar: { showQuickFilter: true } }}
           />
         </Box>
 

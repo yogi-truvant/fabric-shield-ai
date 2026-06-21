@@ -20,6 +20,7 @@ import Scan from "./pages/Scan";
 import Approvals from "./pages/Approvals";
 import Audit from "./pages/Audit";
 import Connections from "./pages/Connections";
+import Guide from "./pages/Guide";
 
 function TrustPill({ icon, text }) {
   return (
@@ -99,6 +100,7 @@ export default function App() {
                     <Route path="/connections" element={<Connections />} />
                     <Route path="/approvals" element={<Approvals />} />
                     <Route path="/audit" element={<Audit />} />
+                    <Route path="/guide" element={<Guide />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </ErrorBoundary>
