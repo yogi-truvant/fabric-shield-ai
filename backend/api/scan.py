@@ -16,6 +16,7 @@ from backend.core.content_scanner import merge_detections, scan_table_values
 from backend.core.db_connector import DatabaseConnector
 from backend.core.limits import enforce_can_scan
 from backend.core.pii_engine import scan_columns
+from backend.core.reconcile import reconcile
 from backend.models.schemas import (
     AuditAction,
     ScanRequest,
@@ -115,12 +116,27 @@ async def _run_scan(
         # Persist scan result
         await store.upsert_scan(scan_result)
 
-        # Create approval records for each flagged column.
-        # First supersede any still-pending approvals for this connection so repeat
-        # scans don't accumulate duplicates (approved/masked records are preserved).
+        # Reconcile detected columns against existing approvals: keep already-decided
+        # columns (approved/masked/rejected stay as-is, never resurfaced), de-duplicate,
+        # drop stale pending, and create pending only for genuinely NEW columns.
         from backend.models.schemas import ApprovalRecord, ApprovalStatus
-        await store.delete_pending_approvals(request.tenant_id, request.connection_name)
-        for col in pii_columns:
+        existing = await store.list_all_approvals_for_connection(
+            request.tenant_id, request.connection_name
+        )
+        existing_lite = [
+            {"key": (a.schema_name, a.table_name, a.column_name),
+             "id": a.approval_id, "status": a.status.value}
+            for a in existing
+        ]
+        detected_keys = [(c.schema_name, c.table_name, c.column_name) for c in pii_columns]
+        to_create, to_delete = reconcile(detected_keys, existing_lite)
+
+        for _id in to_delete:
+            await store.delete_approval(request.tenant_id, _id)
+
+        col_by_key = {(c.schema_name, c.table_name, c.column_name): c for c in pii_columns}
+        for key in to_create:
+            col = col_by_key[key]
             approval = ApprovalRecord(
                 tenant_id=request.tenant_id,
                 scan_id=scan_result.scan_id,

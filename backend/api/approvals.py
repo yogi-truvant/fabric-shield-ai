@@ -253,20 +253,48 @@ async def apply_masking(
 async def get_approval_stats(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> dict:
-    """Returns count breakdown by status — used for the KPI dashboard."""
+    """Returns count breakdown by status — used for the KPI dashboard.
+
+    'Total PII columns' counts only GENUINE PII: pending + approved + masked +
+    masking_failed. Rejected columns (an approver deemed them not sensitive) are
+    excluded, so coverage/high-risk percentages are computed against real PII."""
     store = CosmosStore()
     counts = await store.count_approvals_by_status(tenant_id=user.tenant_id)
-    total = sum(counts.values())
+    pending = counts.get(ApprovalStatus.pending.value, 0)
+    approved = counts.get(ApprovalStatus.approved.value, 0)
     masked = counts.get(ApprovalStatus.masked.value, 0)
-    high_risk = counts.get(ApprovalStatus.pending.value, 0)
+    masking_failed = counts.get(ApprovalStatus.masking_failed.value, 0)
+    rejected = counts.get(ApprovalStatus.rejected.value, 0)
+
+    total_pii = pending + approved + masked + masking_failed   # excludes rejected
 
     return {
-        "total_pii_columns": total,
-        "pending": counts.get(ApprovalStatus.pending.value, 0),
-        "approved": counts.get(ApprovalStatus.approved.value, 0),
-        "rejected": counts.get(ApprovalStatus.rejected.value, 0),
+        "total_pii_columns": total_pii,
+        "pending": pending,
+        "approved": approved,
+        "rejected": rejected,
         "masked": masked,
-        "masking_failed": counts.get(ApprovalStatus.masking_failed.value, 0),
-        "masking_coverage_pct": round(masked / max(total, 1) * 100, 1),
-        "high_risk_pct": round(high_risk / max(total, 1) * 100, 1),
+        "masking_failed": masking_failed,
+        "masking_coverage_pct": round(masked / max(total_pii, 1) * 100, 1),
+        "high_risk_pct": round(pending / max(total_pii, 1) * 100, 1),
     }
+
+
+@router.post(
+    "/approvals/clear",
+    summary="Clear approval/scan results for the tenant (optionally one connection)",
+    dependencies=[RequireApprover],
+)
+async def clear_approvals(
+    user: Annotated[UserContext, Depends(get_current_user)],
+    connection_name: Optional[str] = None,
+) -> dict:
+    """Delete all approval records for the tenant, or just one connection. Gives a clean
+    slate (e.g. after testing). Does NOT remove any masks already applied in the database —
+    it only clears FabricShield's tracking so the next scan repopulates from scratch."""
+    store = CosmosStore()
+    deleted = await store.delete_all_approvals_for_connection(
+        tenant_id=user.tenant_id, connection_name=connection_name
+    )
+    logger.info("approvals.cleared", tenant=user.tenant_id, connection=connection_name, deleted=deleted)
+    return {"status": "cleared", "deleted": deleted, "connection_name": connection_name}

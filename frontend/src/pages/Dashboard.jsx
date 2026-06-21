@@ -52,6 +52,7 @@ export default function Dashboard() {
     approvalsApi.listApprovals({ limit: 500 }).then((r) => {
       const ent = {}, tbl = {};
       (r.data || []).forEach((a) => {
+        if (a.status === "REJECTED") return;   // rejected columns aren't counted as PII
         ent[a.entity_type] = (ent[a.entity_type] || 0) + 1;
         const key = `${a.schema_name}.${a.table_name}`;
         tbl[key] = (tbl[key] || 0) + 1;

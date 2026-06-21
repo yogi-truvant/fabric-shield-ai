@@ -8,7 +8,7 @@ import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions,
   DialogContent, DialogTitle, LinearProgress, TextField, Typography,
 } from "@mui/material";
-import { Check, Close, Lock, Refresh } from "@mui/icons-material";
+import { Check, Close, DeleteSweep, Lock, Refresh } from "@mui/icons-material";
 import { DataGrid, GridToolbar } from "@mui/x-data-grid";
 import { useMsal } from "@azure/msal-react";
 import { useSnackbar } from "notistack";
@@ -44,6 +44,7 @@ export default function Approvals() {
   const [actionLoading, setActionLoading] = useState(false);
   const [rejectDialog, setRejectDialog] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
+  const [clearDialog, setClearDialog] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -70,6 +71,19 @@ export default function Approvals() {
       setActionLoading(false);
       setRejectDialog(false);
       setRejectReason("");
+    }
+  };
+
+  const handleClear = async () => {
+    try {
+      const r = await approvalsApi.clear();
+      enqueueSnackbar(`Cleared ${r.data.deleted} result(s) - re-scan to repopulate`, { variant: "info" });
+      setSelected([]);
+      load();
+    } catch (err) {
+      enqueueSnackbar(err.message, { variant: "error" });
+    } finally {
+      setClearDialog(false);
     }
   };
 
@@ -122,7 +136,14 @@ export default function Approvals() {
             <Typography variant="h4">Approvals</Typography>
             <Typography variant="subtitle1" color="text.secondary">Review and action flagged PII / PHI columns</Typography>
           </Box>
-          <Button startIcon={<Refresh />} onClick={load} variant="outlined">Refresh</Button>
+          <Box sx={{ display: "flex", gap: 1 }}>
+            {canApprove && (
+              <Button startIcon={<DeleteSweep />} onClick={() => setClearDialog(true)} variant="outlined" color="error">
+                Clear results
+              </Button>
+            )}
+            <Button startIcon={<Refresh />} onClick={load} variant="outlined">Refresh</Button>
+          </Box>
         </Box>
 
         <Box sx={{ display: "flex", gap: 1, mb: 2, flexWrap: "wrap", alignItems: "center" }}>
@@ -172,6 +193,21 @@ export default function Approvals() {
             <Button color="error" variant="contained" onClick={() => handleBulkAction("reject", rejectReason)} disabled={actionLoading}>
               Confirm Reject
             </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={clearDialog} onClose={() => setClearDialog(false)} maxWidth="xs" fullWidth>
+          <DialogTitle>Clear all results?</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">
+              This removes all scan/approval records for your tenant so the next scan starts fresh.
+              It does <strong>not</strong> remove masks already applied in the database - only
+              FabricShield&apos;s tracking. This cannot be undone.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setClearDialog(false)}>Cancel</Button>
+            <Button color="error" variant="contained" onClick={handleClear}>Clear results</Button>
           </DialogActions>
         </Dialog>
       </Box>

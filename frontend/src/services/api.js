@@ -62,6 +62,10 @@ export const approvalsApi = {
       params: { connection_name: connectionName, db_type: dbType },
     }),
   getStats: () => apiClient.get("/approvals/stats"),
+  clear: (connectionName) =>
+    apiClient.post("/approvals/clear", null, {
+      params: connectionName ? { connection_name: connectionName } : {},
+    }),
 };
 
 export const connectionsApi = {

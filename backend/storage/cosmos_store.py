@@ -189,6 +189,51 @@ class CosmosStore:
             await container.delete_item(item=_id, partition_key=tenant_id)
         return len(ids)
 
+    async def list_all_approvals_for_connection(
+        self, tenant_id: str, connection_name: str
+    ) -> List[ApprovalRecord]:
+        """All approvals (any status) for a connection — used to reconcile a re-scan."""
+        query = "SELECT * FROM c WHERE c.tenant_id = @tid AND c.connection_name = @conn"
+        params = [
+            {"name": "@tid", "value": tenant_id},
+            {"name": "@conn", "value": connection_name},
+        ]
+        items = []
+        async for item in self._container(settings.cosmos_container_approvals).query_items(
+            query=query, parameters=params
+        ):
+            items.append(ApprovalRecord(**item))
+        return items
+
+    async def delete_approval(self, tenant_id: str, approval_id: str) -> None:
+        """Delete a single approval by id (partitioned by tenant)."""
+        try:
+            await self._container(settings.cosmos_container_approvals).delete_item(
+                item=approval_id, partition_key=tenant_id
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 404:
+                raise
+
+    async def delete_all_approvals_for_connection(
+        self, tenant_id: str, connection_name: Optional[str] = None
+    ) -> int:
+        """Clear approvals — for one connection, or all of the tenant's if name is None."""
+        if connection_name:
+            query = "SELECT c.id FROM c WHERE c.tenant_id = @tid AND c.connection_name = @conn"
+            params = [
+                {"name": "@tid", "value": tenant_id},
+                {"name": "@conn", "value": connection_name},
+            ]
+        else:
+            query = "SELECT c.id FROM c WHERE c.tenant_id = @tid"
+            params = [{"name": "@tid", "value": tenant_id}]
+        container = self._container(settings.cosmos_container_approvals)
+        ids = [item["id"] async for item in container.query_items(query=query, parameters=params)]
+        for _id in ids:
+            await container.delete_item(item=_id, partition_key=tenant_id)
+        return len(ids)
+
     # ── Audit Logs ────────────────────────────────────────────────────────────
 
     async def append_audit(self, entry: AuditLog) -> None:
