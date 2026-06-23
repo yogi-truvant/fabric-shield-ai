@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Annotated, List, Optional
 
 import structlog
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.identity import ManagedIdentityCredential
 from azure.keyvault.secrets import SecretClient
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -45,6 +45,20 @@ def _get(name: str) -> Optional[str]:
         return _kv_client().get_secret(name).value
     except ResourceNotFoundError:
         return None
+
+
+def _purge_if_soft_deleted(kv: SecretClient, name: str) -> None:
+    """Key Vault soft-delete keeps a deleted secret's NAME reserved until it is purged
+    or recovered. Before (re)writing a secret, purge any soft-deleted version with the
+    same name so connection names can be reused after a delete. No-op if not deleted, or
+    if the vault has purge-protection / the identity lacks purge rights (logged)."""
+    try:
+        kv.purge_deleted_secret(name)
+        logger.info("connections.purged_soft_deleted", secret=name)
+    except ResourceNotFoundError:
+        pass  # not in a soft-deleted state — nothing to purge
+    except HttpResponseError as exc:  # purge-protection on, or missing purge permission
+        logger.warning("connections.purge_skipped", secret=name, error=str(exc))
 
 
 @router.get("/connections", response_model=List[ConnectionInfo], dependencies=[RequireAnalyst])
@@ -125,6 +139,9 @@ async def create_connection(
     }
 
     def _write():
+        # Reuse a name that was previously deleted: clear any soft-deleted leftovers first.
+        for suffix in ("-server", "-database", "-meta", "-sqlpassword"):
+            _purge_if_soft_deleted(kv, f"{pfx}{suffix}")
         kv.set_secret(f"{pfx}-server", req.server)
         kv.set_secret(f"{pfx}-database", req.database)
         kv.set_secret(f"{pfx}-meta", json.dumps(meta))
@@ -184,10 +201,17 @@ async def delete_connection(name: str, user: Annotated[UserContext, Depends(get_
 
     def _delete():
         for suffix in ("-server", "-database", "-meta", "-sqlpassword"):
+            secret = f"{pfx}{suffix}"
             try:
-                kv.begin_delete_secret(f"{pfx}{suffix}")
+                poller = kv.begin_delete_secret(secret)
+                # Wait for soft-delete to settle, then purge so the name is reusable now.
+                try:
+                    poller.wait(timeout=30)
+                except Exception:  # noqa: BLE001 — poller timeout shouldn't block the API
+                    pass
             except ResourceNotFoundError:
-                pass
+                continue
+            _purge_if_soft_deleted(kv, secret)
 
     await asyncio.get_event_loop().run_in_executor(None, _delete)
 
