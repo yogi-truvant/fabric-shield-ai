@@ -58,6 +58,8 @@ export const approvalsApi = {
   listApprovals: (params = {}) => apiClient.get("/approvals", { params }),
   bulkAction: (payload) => apiClient.post("/approvals/bulk", payload),
   bulkMask: (payload) => apiClient.post("/approvals/bulk-mask", payload),
+  bulkUnmask: (payload) => apiClient.post("/approvals/bulk-unmask", payload),
+  unmask: (approvalId) => apiClient.post(`/approvals/${approvalId}/unmask`),
   applyMask: (approvalId, connectionName, dbType) =>
     apiClient.post(`/approvals/${approvalId}/mask`, null, {
       params: { connection_name: connectionName, db_type: dbType },

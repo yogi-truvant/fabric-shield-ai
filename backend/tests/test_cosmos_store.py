@@ -63,6 +63,27 @@ async def test_delete_pending_approvals_filters_by_connection_and_pending():
 
 
 @pytest.mark.asyncio
+async def test_connection_scoped_queries_are_tenant_isolated():
+    """Regression guard: connection-scoped reads/deletes must always filter by tenant_id,
+    so one tenant can never touch another tenant's data."""
+    store = CosmosStore()
+    captured = {}
+
+    def _query(query, parameters):
+        captured["params"] = {p["name"]: p["value"] for p in parameters}
+        return _AsyncIter([])
+
+    container = MagicMock()
+    container.query_items = MagicMock(side_effect=_query)
+    container.delete_item = AsyncMock()
+    with patch.object(store, "_container", return_value=container):
+        await store.list_all_approvals_for_connection("tenant-A", "conn-1")
+        assert captured["params"]["@tid"] == "tenant-A"
+        await store.delete_scans_for_connection("tenant-A", "conn-1")
+        assert captured["params"]["@tid"] == "tenant-A"
+
+
+@pytest.mark.asyncio
 async def test_count_approvals_by_status_counts_per_status():
     store = CosmosStore()
     container = MagicMock()

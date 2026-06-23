@@ -263,6 +263,93 @@ async def apply_masking(
     return await _mask_record(store, audit, user, record)
 
 
+async def _unmask_record(store, audit, user, record):
+    """Drop the DDM mask for a MASKED column and set it back to APPROVED. Returns (ok, error)."""
+    if not record.connection_name:
+        return False, "Approval has no connection_name; re-run the scan."
+    engine = MaskingEngine(tenant_id=user.tenant_id)
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(
+        None,
+        lambda: engine.drop_mask(
+            connection_name=record.connection_name, db_type=record.database_type,
+            schema=record.schema_name, table=record.table_name, column=record.column_name,
+        ),
+    )
+    details = {"schema": record.schema_name, "table": record.table_name, "column": record.column_name}
+    if ok:
+        record.status = ApprovalStatus.approved
+        record.masked_at = None
+        await store.upsert_approval(record)
+        await audit.log(AuditAction.masking_removed, actor=user, resource_id=record.approval_id, details=details)
+        return True, None
+    await audit.log(AuditAction.masking_removed, actor=user, resource_id=record.approval_id,
+                    details=details, success=False)
+    return False, "Drop mask failed"
+
+
+@router.post(
+    "/approvals/bulk-unmask",
+    response_model=BulkApprovalResponse,
+    summary="Remove masks from columns (admin/approver)",
+    dependencies=[RequireApprover],
+)
+async def bulk_unmask(
+    user: Annotated[UserContext, Depends(get_current_user)],
+    request: BulkMaskRequest,
+) -> BulkApprovalResponse:
+    """Unmask the given masked columns, or ALL masked columns for the tenant when no ids
+    are supplied. Skips anything not in MASKED status."""
+    store = CosmosStore()
+    audit = AuditLogger()
+    if request.approval_ids:
+        records = []
+        for aid in request.approval_ids:
+            r = await store.get_approval(tenant_id=user.tenant_id, approval_id=aid)
+            if r and r.status == ApprovalStatus.masked:
+                records.append(r)
+    else:
+        masked = await store.list_approvals(
+            tenant_id=user.tenant_id, status_filter=ApprovalStatus.masked, limit=500
+        )
+        records = [r for r in masked
+                   if not request.connection_name or r.connection_name == request.connection_name]
+
+    succeeded = 0
+    failed = 0
+    errors: List[dict] = []
+    for record in records:
+        ok, err = await _unmask_record(store, audit, user, record)
+        if ok:
+            succeeded += 1
+        else:
+            failed += 1
+            errors.append({"approval_id": record.approval_id, "error": err or "unmask failed"})
+    return BulkApprovalResponse(processed=len(records), succeeded=succeeded, failed=failed, errors=errors)
+
+
+@router.post(
+    "/approvals/{approval_id}/unmask",
+    summary="Remove the mask from a single column (admin/approver)",
+    dependencies=[RequireApprover],
+)
+async def unmask_one(
+    approval_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    store = CosmosStore()
+    audit = AuditLogger()
+    record = await store.get_approval(tenant_id=user.tenant_id, approval_id=approval_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    if record.status != ApprovalStatus.masked:
+        raise HTTPException(status_code=400, detail=f"Cannot unmask — status is '{record.status.value}', must be MASKED.")
+    ok, err = await _unmask_record(store, audit, user, record)
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "Unmask failed")
+    return {"status": "unmasked", "approval_id": approval_id}
+
+
 @router.get(
     "/approvals/stats",
     summary="Get approval statistics for the tenant dashboard",

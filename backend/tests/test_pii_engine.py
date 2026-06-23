@@ -11,6 +11,22 @@ from backend.core.pii_engine import (
 from backend.models.schemas import DetectionSource, MaskType, PiiEntityType
 
 
+class TestConfidenceCalibration:
+    def test_cmrn_does_not_false_match_mrn(self):
+        # 'CMRN' must NOT match the \bmrn\b rule (Bishwesh's false-positive)
+        assert _apply_rules("CMRN") is None
+
+    def test_plain_mrn_still_flagged(self):
+        result = _apply_rules("mrn")
+        assert result is not None and result[0] == PiiEntityType.MEDICAL_RECORD
+
+    def test_ambiguous_identifier_ranks_below_structured_pii(self):
+        mrn = _apply_rules("mrn")
+        cc = _apply_rules("credit_card")
+        assert mrn[1] < cc[1]        # MRN confidence below credit card
+        assert mrn[1] >= 0.6         # but still above the 0.6 flag threshold
+
+
 class TestRuleBasedDetection:
     def test_ssn_column_name(self):
         result = _apply_rules("patient_ssn")

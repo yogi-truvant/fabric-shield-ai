@@ -20,9 +20,19 @@ const ACTION_GROUPS = {
   "approval.submitted": { color: "info", group: "Approval" },
   "masking.applied": { color: "success", group: "Masking" },
   "masking.failed": { color: "error", group: "Masking" },
+  "masking.removed": { color: "warning", group: "Masking" },
+  "connection.deleted": { color: "error", group: "Connections" },
   "purview.classification_pushed": { color: "secondary", group: "Governance" },
   "marketplace.tenant_provisioned": { color: "primary", group: "Platform" },
 };
+
+// Pull the affected column out of the audit details (varies by action type).
+function affectedColumn(details) {
+  const d = details || {};
+  if (d.schema && d.table && d.column) return `${d.schema}.${d.table}.${d.column}`;
+  if (d.column) return d.column;        // approval.submitted stores "schema.table.column"
+  return "-";
+}
 
 export default function Audit() {
   const [rows, setRows] = useState([]);
@@ -52,7 +62,11 @@ export default function Audit() {
       },
     },
     { field: "actor_email", headerName: "Actor", width: 200, flex: 1 },
-    { field: "resource_id", headerName: "Resource ID", width: 180 },
+    {
+      field: "column", headerName: "Column", width: 230,
+      valueGetter: (_, row) => affectedColumn(row.details),
+    },
+    { field: "resource_id", headerName: "Resource ID", width: 170 },
     {
       field: "success", headerName: "Result", width: 90,
       renderCell: (params) => (

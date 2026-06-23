@@ -74,6 +74,8 @@ class AuditAction(str, Enum):
     approval_submitted = "approval.submitted"
     masking_applied = "masking.applied"
     masking_failed = "masking.failed"
+    masking_removed = "masking.removed"
+    connection_deleted = "connection.deleted"
     purview_push = "purview.classification_pushed"
     tenant_provisioned = "marketplace.tenant_provisioned"
     tenant_deprovisioned = "marketplace.tenant_deprovisioned"

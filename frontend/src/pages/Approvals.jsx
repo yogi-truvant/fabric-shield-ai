@@ -1,7 +1,7 @@
 /**
  * FabricShield AI - Approvals
  * Data grid with risk-colored entities, confidence bars, detection source,
- * bulk approve/reject/mask, and clear.
+ * tab-aware bulk actions (approve/reject/mask/unmask), and clear.
  */
 
 import React, { useCallback, useEffect, useState } from "react";
@@ -9,7 +9,7 @@ import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions,
   DialogContent, DialogTitle, LinearProgress, TextField, Typography,
 } from "@mui/material";
-import { Check, Close, DeleteSweep, Lock, Refresh } from "@mui/icons-material";
+import { Check, Close, DeleteSweep, Lock, LockOpen, Refresh } from "@mui/icons-material";
 import { DataGrid, GridToolbar } from "@mui/x-data-grid";
 import { useMsal } from "@azure/msal-react";
 import { useSnackbar } from "notistack";
@@ -69,13 +69,25 @@ export default function Approvals() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleBulkAction = async (action, reason) => {
+  // Which bulk actions make sense for the current tab.
+  const f = statusFilter;
+  const showApprove = canApprove && (f === null || f === "PENDING" || f === "REJECTED");
+  const showReject = canApprove && (f === null || f === "PENDING" || f === "APPROVED");
+  const showMask = canApprove && (f === null || f === "APPROVED");
+  const showUnmask = canApprove && (f === null || f === "MASKED");
+
+  const runBulk = async (fn, verb) => {
     if (!selected.length) return;
     setActionLoading(true);
     try {
-      const res = await approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: selected, action, rejection_reason: reason });
+      const res = await fn();
       const d = res.data;
-      enqueueSnackbar(`${d.succeeded} ${action}d, ${d.failed} failed`, { variant: d.failed > 0 ? "warning" : "success" });
+      if (d.processed === 0) {
+        enqueueSnackbar(`Nothing to ${verb} in the selected rows`, { variant: "info" });
+      } else {
+        enqueueSnackbar(`${d.succeeded} ${verb}${verb.endsWith("e") ? "d" : "ed"}, ${d.failed} failed`,
+          { variant: d.failed > 0 ? "warning" : "success" });
+      }
       setSelected([]);
       load();
     } catch (err) {
@@ -87,25 +99,10 @@ export default function Approvals() {
     }
   };
 
-  const handleBulkMask = async () => {
-    if (!selected.length) return;
-    setActionLoading(true);
-    try {
-      const res = await approvalsApi.bulkMask({ approval_ids: selected });
-      const d = res.data;
-      if (d.processed === 0) {
-        enqueueSnackbar("Nothing to mask - select Approved columns first", { variant: "info" });
-      } else {
-        enqueueSnackbar(`${d.succeeded} masked, ${d.failed} failed`, { variant: d.failed > 0 ? "warning" : "success" });
-      }
-      setSelected([]);
-      load();
-    } catch (err) {
-      enqueueSnackbar(err.message, { variant: "error" });
-    } finally {
-      setActionLoading(false);
-    }
-  };
+  const approveSel = () => runBulk(() => approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: selected, action: "approve" }), "approve");
+  const rejectSel = (reason) => runBulk(() => approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: selected, action: "reject", rejection_reason: reason }), "reject");
+  const maskSel = () => runBulk(() => approvalsApi.bulkMask({ approval_ids: selected }), "mask");
+  const unmaskSel = () => runBulk(() => approvalsApi.bulkUnmask({ approval_ids: selected }), "unmask");
 
   const handleClear = async () => {
     try {
@@ -118,6 +115,11 @@ export default function Approvals() {
     } finally {
       setClearDialog(false);
     }
+  };
+
+  const rowAction = async (apiCall, okMsg) => {
+    try { await apiCall(); enqueueSnackbar(okMsg, { variant: "success" }); load(); }
+    catch (err) { enqueueSnackbar(err.message, { variant: "error" }); }
   };
 
   const columns = [
@@ -157,15 +159,23 @@ export default function Approvals() {
     },
     { field: "created_at", headerName: "Detected", width: 160, valueFormatter: (v) => v ? new Date(v).toLocaleString() : "-" },
     {
-      field: "actions", headerName: "Action", width: 100, sortable: false,
-      renderCell: (p) => p.row.status === "APPROVED" && canApprove ? (
-        <Button size="small" startIcon={<Lock />} color="success" onClick={async (e) => {
-          e.stopPropagation();
-          try { await approvalsApi.applyMask(p.row.approval_id, p.row.connection_name, "azure_sql");
-            enqueueSnackbar("Mask applied", { variant: "success" }); load();
-          } catch (err) { enqueueSnackbar(err.message, { variant: "error" }); }
-        }}>Mask</Button>
-      ) : null,
+      field: "actions", headerName: "Action", width: 110, sortable: false,
+      renderCell: (p) => {
+        if (!canApprove) return null;
+        if (p.row.status === "APPROVED") {
+          return <Button size="small" startIcon={<Lock />} color="success" onClick={(e) => {
+            e.stopPropagation();
+            rowAction(() => approvalsApi.applyMask(p.row.approval_id, p.row.connection_name, "azure_sql"), "Mask applied");
+          }}>Mask</Button>;
+        }
+        if (p.row.status === "MASKED") {
+          return <Button size="small" startIcon={<LockOpen />} color="warning" onClick={(e) => {
+            e.stopPropagation();
+            rowAction(() => approvalsApi.unmask(p.row.approval_id), "Mask removed");
+          }}>Unmask</Button>;
+        }
+        return null;
+      },
     },
   ];
 
@@ -200,17 +210,27 @@ export default function Approvals() {
           <Box sx={{ position: "sticky", top: 56, zIndex: 2, mb: 2 }}>
             <Alert severity="info" sx={{ boxShadow: 3 }}
               action={
-                <Box sx={{ display: "flex", gap: 1 }}>
-                  <Button size="small" color="success" variant="contained"
-                    startIcon={actionLoading ? <CircularProgress size={14} color="inherit" /> : <Check />}
-                    onClick={() => handleBulkAction("approve")} disabled={actionLoading}>Approve {selected.length}</Button>
-                  <Button size="small" color="error" variant="contained" startIcon={<Close />}
-                    onClick={() => setRejectDialog(true)} disabled={actionLoading}>Reject {selected.length}</Button>
-                  <Button size="small" color="secondary" variant="contained" startIcon={<Lock />}
-                    onClick={handleBulkMask} disabled={actionLoading}>Mask {selected.length}</Button>
+                <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                  {showApprove && (
+                    <Button size="small" color="success" variant="contained"
+                      startIcon={actionLoading ? <CircularProgress size={14} color="inherit" /> : <Check />}
+                      onClick={approveSel} disabled={actionLoading}>Approve {selected.length}</Button>
+                  )}
+                  {showReject && (
+                    <Button size="small" color="error" variant="contained" startIcon={<Close />}
+                      onClick={() => setRejectDialog(true)} disabled={actionLoading}>Reject {selected.length}</Button>
+                  )}
+                  {showMask && (
+                    <Button size="small" color="secondary" variant="contained" startIcon={<Lock />}
+                      onClick={maskSel} disabled={actionLoading}>Mask {selected.length}</Button>
+                  )}
+                  {showUnmask && (
+                    <Button size="small" color="warning" variant="contained" startIcon={<LockOpen />}
+                      onClick={unmaskSel} disabled={actionLoading}>Unmask {selected.length}</Button>
+                  )}
                 </Box>
               }>
-              {selected.length} column(s) selected — Mask applies only to Approved columns
+              {selected.length} column(s) selected
             </Alert>
           </Box>
         )}
@@ -234,7 +254,7 @@ export default function Approvals() {
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setRejectDialog(false)}>Cancel</Button>
-            <Button color="error" variant="contained" onClick={() => handleBulkAction("reject", rejectReason)} disabled={actionLoading}>
+            <Button color="error" variant="contained" onClick={() => rejectSel(rejectReason)} disabled={actionLoading}>
               Confirm Reject
             </Button>
           </DialogActions>

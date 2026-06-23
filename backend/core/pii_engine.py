@@ -36,21 +36,28 @@ class ColumnRule:
     base_confidence: float = 0.75
 
 
-# Production-grade column-name patterns (case-insensitive).
+# Confidence reflects how UNAMBIGUOUS the column NAME is on its own. Unambiguous PII
+# (SSN, email, credit card) scores high; ambiguous identifiers (MRN, patient/encounter
+# id, account no., names, locations) score lower ("needs review") and only reach high
+# confidence when a content scan confirms the values (the merge adds a boost). The flag
+# threshold is 0.6, so downgraded identifiers are still surfaced — just not over-stated.
 COLUMN_RULES: List[ColumnRule] = [
-    ColumnRule(re.compile(r"\bssn\b|social.?sec|tax.?id", re.I), PiiEntityType.SSN, MaskType.partial, 0.90),
-    ColumnRule(re.compile(r"\bemail\b|e.?mail.?addr", re.I), PiiEntityType.EMAIL, MaskType.email, 0.90),
-    ColumnRule(re.compile(r"\bphone\b|\bmobile\b|\bcell\b|\bfax\b|telephone", re.I), PiiEntityType.PHONE, MaskType.partial, 0.85),
-    ColumnRule(re.compile(r"dob|date.?of.?birth|birth.?date|birthday", re.I), PiiEntityType.DATE_OF_BIRTH, MaskType.default, 0.90),
-    ColumnRule(re.compile(r"credit.?card|cc.?num|card.?num|cvv|cvc|expir", re.I), PiiEntityType.CREDIT_CARD, MaskType.partial, 0.92),
-    ColumnRule(re.compile(r"\biban\b|bank.?acct|account.?num|routing", re.I), PiiEntityType.IBAN, MaskType.partial, 0.85),
-    ColumnRule(re.compile(r"\bip.?addr\b|client.?ip|remote.?addr", re.I), PiiEntityType.IP_ADDRESS, MaskType.default, 0.80),
-    ColumnRule(re.compile(r"first.?name|last.?name|full.?name|patient.?name|person.?name|given.?name|surname", re.I), PiiEntityType.PERSON_NAME, MaskType.default, 0.80),
-    ColumnRule(re.compile(r"\baddress\b|street|postal|zip.?code|city|state|country", re.I), PiiEntityType.LOCATION, MaskType.partial, 0.75),
-    ColumnRule(re.compile(r"mrn|medical.?rec|patient.?id|health.?id|encounter.?id", re.I), PiiEntityType.MEDICAL_RECORD, MaskType.default, 0.90),
-    ColumnRule(re.compile(r"\bnpi\b|provider.?id|physician.?id", re.I), PiiEntityType.NPI, MaskType.partial, 0.85),
-    ColumnRule(re.compile(r"\bdea\b|dea.?num|prescriber", re.I), PiiEntityType.DEA, MaskType.partial, 0.87),
-    ColumnRule(re.compile(r"diagnosis|icd.?\d|procedure|treatment|medication|drug.?name|allerg", re.I), PiiEntityType.PHI_GENERIC, MaskType.default, 0.75),
+    # --- Unambiguous, high-confidence PII (also content-verifiable) ---
+    ColumnRule(re.compile(r"credit.?card|cc.?num|card.?num|cvv|cvc|expir", re.I), PiiEntityType.CREDIT_CARD, MaskType.partial, 0.95),
+    ColumnRule(re.compile(r"\bssn\b|social.?sec|tax.?id", re.I), PiiEntityType.SSN, MaskType.partial, 0.92),
+    ColumnRule(re.compile(r"\bemail\b|e.?mail.?addr", re.I), PiiEntityType.EMAIL, MaskType.email, 0.92),
+    ColumnRule(re.compile(r"\bphone\b|\bmobile\b|\bcell\b|\bfax\b|telephone", re.I), PiiEntityType.PHONE, MaskType.partial, 0.82),
+    ColumnRule(re.compile(r"dob|date.?of.?birth|birth.?date|birthday", re.I), PiiEntityType.DATE_OF_BIRTH, MaskType.default, 0.85),
+    # --- Ambiguous identifiers: downgraded, still flagged for review ---
+    ColumnRule(re.compile(r"\biban\b|bank.?acct|account.?num|routing", re.I), PiiEntityType.IBAN, MaskType.partial, 0.68),
+    ColumnRule(re.compile(r"\bip.?addr\b|client.?ip|remote.?addr", re.I), PiiEntityType.IP_ADDRESS, MaskType.default, 0.72),
+    ColumnRule(re.compile(r"first.?name|last.?name|full.?name|patient.?name|person.?name|given.?name|surname", re.I), PiiEntityType.PERSON_NAME, MaskType.default, 0.70),
+    ColumnRule(re.compile(r"\baddress\b|street|postal|zip.?code|city|state|country", re.I), PiiEntityType.LOCATION, MaskType.partial, 0.65),
+    # \bmrn\b (not bare 'mrn') so 'CMRN' and similar don't false-match
+    ColumnRule(re.compile(r"\bmrn\b|medical.?rec|patient.?id|health.?id|encounter.?id", re.I), PiiEntityType.MEDICAL_RECORD, MaskType.default, 0.65),
+    ColumnRule(re.compile(r"\bnpi\b|provider.?id|physician.?id", re.I), PiiEntityType.NPI, MaskType.partial, 0.68),
+    ColumnRule(re.compile(r"\bdea\b|dea.?num|prescriber", re.I), PiiEntityType.DEA, MaskType.partial, 0.72),
+    ColumnRule(re.compile(r"diagnosis|icd.?\d|procedure|treatment|medication|drug.?name|allerg", re.I), PiiEntityType.PHI_GENERIC, MaskType.default, 0.65),
 ]
 
 # Recommended mask per entity type (used if an entity is detected without a rule mask).

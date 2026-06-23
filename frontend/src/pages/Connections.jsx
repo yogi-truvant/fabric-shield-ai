@@ -1,6 +1,6 @@
 /**
  * FabricShield AI - Connections
- * Register and test the SQL servers / databases FabricShield can scan (hybrid auth).
+ * Register data sources, then Connect → (Test / Refresh / Delete). Hybrid auth.
  */
 
 import React, { useCallback, useEffect, useState } from "react";
@@ -9,7 +9,7 @@ import {
   DialogContent, DialogTitle, FormControl, FormControlLabel, InputLabel, MenuItem, Radio,
   RadioGroup, Select, Stack, TextField, Typography,
 } from "@mui/material";
-import { Add, Delete, NetworkCheck, Storage } from "@mui/icons-material";
+import { Add, CheckCircle, Delete, LinkOff, NetworkCheck, Power, Refresh, Storage } from "@mui/icons-material";
 import { useMsal } from "@azure/msal-react";
 import { useSnackbar } from "notistack";
 import { connectionsApi } from "../services/api";
@@ -29,8 +29,11 @@ export default function Connections() {
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(null);
+  const [busy, setBusy] = useState(null);           // connection name currently testing/connecting
+  const [connected, setConnected] = useState({});   // name -> true once verified this session
   const [form, setForm] = useState(BLANK);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -44,25 +47,40 @@ export default function Connections() {
     setSaving(true);
     try {
       await connectionsApi.create({ ...form, tenant_id: tenantId });
-      enqueueSnackbar("Connection saved", { variant: "success" });
+      enqueueSnackbar("Connection saved - click Connect to verify it", { variant: "success" });
       setDialog(false); setForm(BLANK); load();
     } catch (e) { enqueueSnackbar(e.message, { variant: "error" }); }
     finally { setSaving(false); }
   };
 
-  const test = async (name) => {
-    setTesting(name);
+  // Connect / Test both run the metadata-only reachability check.
+  const verify = async (c, { connecting } = {}) => {
+    setBusy(c.name);
     try {
-      const r = await connectionsApi.test(name);
-      enqueueSnackbar(r.data.success ? `Connected - ${r.data.table_count} tables visible` : `Failed: ${r.data.message}`,
-        { variant: r.data.success ? "success" : "error" });
+      const r = await connectionsApi.test(c.name, c.database_type);
+      if (r.data.success) {
+        setConnected((m) => ({ ...m, [c.name]: true }));
+        enqueueSnackbar(`${connecting ? "Connected" : "Connection OK"} - ${r.data.table_count} tables visible`, { variant: "success" });
+      } else {
+        setConnected((m) => ({ ...m, [c.name]: false }));
+        enqueueSnackbar(`Failed: ${r.data.message}`, { variant: "error" });
+      }
     } catch (e) { enqueueSnackbar(e.message, { variant: "error" }); }
-    finally { setTesting(null); }
+    finally { setBusy(null); }
   };
 
-  const remove = async (name) => {
-    try { await connectionsApi.remove(name); enqueueSnackbar("Connection deleted", { variant: "info" }); load(); }
-    catch (e) { enqueueSnackbar(e.message, { variant: "error" }); }
+  const confirmDelete = async () => {
+    setDeleting(true);
+    try {
+      const r = await connectionsApi.remove(deleteTarget.name);
+      const d = r.data || {};
+      enqueueSnackbar(
+        `Connection deleted - cleared ${d.approvals_removed ?? 0} approval(s) and ${d.scans_removed ?? 0} scan(s)`,
+        { variant: "info" });
+      setConnected((m) => { const n = { ...m }; delete n[deleteTarget.name]; return n; });
+      load();
+    } catch (e) { enqueueSnackbar(e.message, { variant: "error" }); }
+    finally { setDeleting(false); setDeleteTarget(null); }
   };
 
   return (
@@ -77,7 +95,7 @@ export default function Connections() {
         </Box>
 
         <Alert severity="info" sx={{ mb: 2 }}>
-          Service-principal connections use cross-tenant Entra auth with no stored password (recommended). SQL connections store a login and password securely in Key Vault.
+          Save a connection, then <strong>Connect</strong> to verify it. Service-principal uses cross-tenant Entra auth (no stored password); SQL stores a login + password securely in Key Vault.
         </Alert>
 
         {loading ? (
@@ -88,26 +106,45 @@ export default function Connections() {
           </CardContent></Card>
         ) : (
           <Stack spacing={1.5}>
-            {rows.map((c) => (
-              <Card key={c.name}>
-                <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
-                  <Storage color="primary" />
-                  <Box sx={{ flex: 1, minWidth: 180 }}>
-                    <Typography variant="subtitle2" fontWeight={700}>{c.name}</Typography>
-                    <Typography variant="caption" color="text.secondary" noWrap>{c.server} / {c.database}</Typography>
-                  </Box>
-                  <Chip size="small" variant="outlined" label={c.database_type === "fabric" ? "Fabric" : "Azure SQL"} />
-                  <Chip size="small" color={c.auth_mode === "sql" ? "warning" : "success"}
-                    label={c.auth_mode === "sql" ? "SQL auth" : "Service principal"} />
-                  <Button size="small" onClick={() => test(c.name)} disabled={testing === c.name}
-                    startIcon={testing === c.name ? <CircularProgress size={14} /> : <NetworkCheck />}>Test</Button>
-                  {canManage && <Button size="small" color="error" startIcon={<Delete />} onClick={() => remove(c.name)}>Delete</Button>}
-                </CardContent>
-              </Card>
-            ))}
+            {rows.map((c) => {
+              const isConnected = !!connected[c.name];
+              const isBusy = busy === c.name;
+              return (
+                <Card key={c.name}>
+                  <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+                    <Storage color="primary" />
+                    <Box sx={{ flex: 1, minWidth: 180 }}>
+                      <Typography variant="subtitle2" fontWeight={700}>{c.name}</Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap>{c.server} / {c.database}</Typography>
+                    </Box>
+                    <Chip size="small" variant="outlined" label={c.database_type === "fabric" ? "Fabric" : "Azure SQL"} />
+                    <Chip size="small" color={c.auth_mode === "sql" ? "warning" : "success"}
+                      label={c.auth_mode === "sql" ? "SQL auth" : "Service principal"} />
+                    <Chip size="small" icon={isConnected ? <CheckCircle /> : <LinkOff />}
+                      color={isConnected ? "success" : "default"} variant={isConnected ? "filled" : "outlined"}
+                      label={isConnected ? "Connected" : "Not connected"} />
+
+                    {!isConnected ? (
+                      <Button size="small" variant="contained" onClick={() => verify(c, { connecting: true })} disabled={isBusy}
+                        startIcon={isBusy ? <CircularProgress size={14} color="inherit" /> : <Power />}>Connect</Button>
+                    ) : (
+                      <>
+                        <Button size="small" onClick={() => verify(c)} disabled={isBusy}
+                          startIcon={isBusy ? <CircularProgress size={14} /> : <NetworkCheck />}>Test</Button>
+                        <Button size="small" onClick={load} startIcon={<Refresh />}>Refresh</Button>
+                      </>
+                    )}
+                    {canManage && (
+                      <Button size="small" color="error" startIcon={<Delete />} onClick={() => setDeleteTarget(c)}>Delete</Button>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
           </Stack>
         )}
 
+        {/* New connection dialog */}
         <Dialog open={dialog} onClose={() => setDialog(false)} maxWidth="sm" fullWidth>
           <DialogTitle>New Connection</DialogTitle>
           <DialogContent>
@@ -144,6 +181,25 @@ export default function Connections() {
             <Button variant="contained" onClick={create}
               disabled={saving || !form.name || !form.server || !form.database || (form.auth_mode === "sql" && (!form.sql_username || !form.sql_password))}>
               {saving ? "Saving..." : "Save"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Delete confirmation */}
+        <Dialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} maxWidth="xs" fullWidth>
+          <DialogTitle>Delete connection?</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">
+              Delete <strong>{deleteTarget?.name}</strong>? This removes the connection for everyone in your
+              organization and clears its scan results and approvals (the dashboard resets). The audit log is
+              kept. Masks already applied in the database are <strong>not</strong> removed. This cannot be undone.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button color="error" variant="contained" onClick={confirmDelete} disabled={deleting}
+              startIcon={deleting ? <CircularProgress size={14} color="inherit" /> : <Delete />}>
+              Delete connection
             </Button>
           </DialogActions>
         </Dialog>

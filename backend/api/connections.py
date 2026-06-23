@@ -20,6 +20,7 @@ from backend.auth.entra import RequireAdmin, RequireAnalyst, get_current_user
 from backend.config import get_settings
 from backend.core.db_connector import DatabaseConnector
 from backend.core.limits import enforce_can_add_connection
+from backend.storage.cosmos_store import CosmosStore
 from backend.models.schemas import (
     ConnectionAuthMode, ConnectionCreateRequest, ConnectionInfo,
     ConnectionTestResult, DatabaseType, UserContext,
@@ -189,5 +190,14 @@ async def delete_connection(name: str, user: Annotated[UserContext, Depends(get_
                 pass
 
     await asyncio.get_event_loop().run_in_executor(None, _delete)
-    logger.info("connections.deleted", tenant=user.tenant_id, name=name)
-    return {"status": "deleted", "name": name}
+
+    # Cascade: clear this connection's scans + approvals so the dashboard resets to 0.
+    # Audit records are intentionally preserved (immutable history).
+    store = CosmosStore()
+    approvals_removed = await store.delete_all_approvals_for_connection(user.tenant_id, name)
+    scans_removed = await store.delete_scans_for_connection(user.tenant_id, name)
+
+    logger.info("connections.deleted", tenant=user.tenant_id, name=name,
+                approvals_removed=approvals_removed, scans_removed=scans_removed)
+    return {"status": "deleted", "name": name,
+            "approvals_removed": approvals_removed, "scans_removed": scans_removed}

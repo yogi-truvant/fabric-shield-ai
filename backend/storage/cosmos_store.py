@@ -75,6 +75,19 @@ class CosmosStore:
             return int(value)
         return 0
 
+    async def delete_scans_for_connection(self, tenant_id: str, connection_name: str) -> int:
+        """Delete scan records for a connection (used when a connection is removed)."""
+        query = "SELECT c.id FROM c WHERE c.tenant_id = @tid AND c.connection_name = @conn"
+        params = [
+            {"name": "@tid", "value": tenant_id},
+            {"name": "@conn", "value": connection_name},
+        ]
+        container = self._container(settings.cosmos_container_scans)
+        ids = [item["id"] async for item in container.query_items(query=query, parameters=params)]
+        for _id in ids:
+            await container.delete_item(item=_id, partition_key=tenant_id)
+        return len(ids)
+
     async def get_scan(self, tenant_id: str, scan_id: str) -> Optional[ScanResult]:
         try:
             item = await self._container(settings.cosmos_container_scans).read_item(
