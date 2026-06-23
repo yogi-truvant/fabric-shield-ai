@@ -69,12 +69,16 @@ export default function Approvals() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Which bulk actions make sense for the current tab.
-  const f = statusFilter;
-  const showApprove = canApprove && (f === null || f === "PENDING" || f === "REJECTED");
-  const showReject = canApprove && (f === null || f === "PENDING" || f === "APPROVED");
-  const showMask = canApprove && (f === null || f === "APPROVED");
-  const showUnmask = canApprove && (f === null || f === "MASKED");
+  // Eligible actions are derived from the ACTUAL statuses of the selected rows, so the
+  // counts are correct and only applicable actions appear (matters most in the All tab,
+  // where the selection is a mix of pending/approved/masked/rejected).
+  const selectedRows = rows.filter((r) => selected.includes(r.id));
+  const eligible = {
+    approve: selectedRows.filter((r) => r.status === "PENDING" || r.status === "REJECTED").map((r) => r.id),
+    reject: selectedRows.filter((r) => r.status === "PENDING" || r.status === "APPROVED").map((r) => r.id),
+    mask: selectedRows.filter((r) => r.status === "APPROVED").map((r) => r.id),
+    unmask: selectedRows.filter((r) => r.status === "MASKED").map((r) => r.id),
+  };
 
   const runBulk = async (fn, verb) => {
     if (!selected.length) return;
@@ -99,10 +103,10 @@ export default function Approvals() {
     }
   };
 
-  const approveSel = () => runBulk(() => approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: selected, action: "approve" }), "approve");
-  const rejectSel = (reason) => runBulk(() => approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: selected, action: "reject", rejection_reason: reason }), "reject");
-  const maskSel = () => runBulk(() => approvalsApi.bulkMask({ approval_ids: selected }), "mask");
-  const unmaskSel = () => runBulk(() => approvalsApi.bulkUnmask({ approval_ids: selected }), "unmask");
+  const approveSel = () => runBulk(() => approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: eligible.approve, action: "approve" }), "approve");
+  const rejectSel = (reason) => runBulk(() => approvalsApi.bulkAction({ tenant_id: tenantId, approval_ids: eligible.reject, action: "reject", rejection_reason: reason }), "reject");
+  const maskSel = () => runBulk(() => approvalsApi.bulkMask({ approval_ids: eligible.mask }), "mask");
+  const unmaskSel = () => runBulk(() => approvalsApi.bulkUnmask({ approval_ids: eligible.unmask }), "unmask");
 
   const handleClear = async () => {
     try {
@@ -211,26 +215,26 @@ export default function Approvals() {
             <Alert severity="info" sx={{ boxShadow: 3 }}
               action={
                 <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-                  {showApprove && (
+                  {eligible.approve.length > 0 && (
                     <Button size="small" color="success" variant="contained"
                       startIcon={actionLoading ? <CircularProgress size={14} color="inherit" /> : <Check />}
-                      onClick={approveSel} disabled={actionLoading}>Approve {selected.length}</Button>
+                      onClick={approveSel} disabled={actionLoading}>Approve {eligible.approve.length}</Button>
                   )}
-                  {showReject && (
+                  {eligible.reject.length > 0 && (
                     <Button size="small" color="error" variant="contained" startIcon={<Close />}
-                      onClick={() => setRejectDialog(true)} disabled={actionLoading}>Reject {selected.length}</Button>
+                      onClick={() => setRejectDialog(true)} disabled={actionLoading}>Reject {eligible.reject.length}</Button>
                   )}
-                  {showMask && (
+                  {eligible.mask.length > 0 && (
                     <Button size="small" color="secondary" variant="contained" startIcon={<Lock />}
-                      onClick={maskSel} disabled={actionLoading}>Mask {selected.length}</Button>
+                      onClick={maskSel} disabled={actionLoading}>Mask {eligible.mask.length}</Button>
                   )}
-                  {showUnmask && (
+                  {eligible.unmask.length > 0 && (
                     <Button size="small" color="warning" variant="contained" startIcon={<LockOpen />}
-                      onClick={unmaskSel} disabled={actionLoading}>Unmask {selected.length}</Button>
+                      onClick={unmaskSel} disabled={actionLoading}>Unmask {eligible.unmask.length}</Button>
                   )}
                 </Box>
               }>
-              {selected.length} column(s) selected
+              {selected.length} selected — actions apply to eligible rows only
             </Alert>
           </Box>
         )}
@@ -247,7 +251,7 @@ export default function Approvals() {
         </Box>
 
         <Dialog open={rejectDialog} onClose={() => setRejectDialog(false)} maxWidth="xs" fullWidth>
-          <DialogTitle>Reject {selected.length} column(s)</DialogTitle>
+          <DialogTitle>Reject {eligible.reject.length} column(s)</DialogTitle>
           <DialogContent>
             <TextField fullWidth multiline rows={3} label="Rejection reason (optional)"
               value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} sx={{ mt: 1 }} />
