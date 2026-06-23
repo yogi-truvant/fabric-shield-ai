@@ -27,7 +27,14 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install ODBC runtime
-        run: sudo apt-get update && sudo apt-get install -y unixodbc
+        run: |
+          # GitHub's ubuntu runner ships a Microsoft apt source that intermittently
+          # returns 403 and breaks `apt-get update`. Remove ANY apt source that points
+          # at packages.microsoft.com, then install unixodbc from the standard Ubuntu repos.
+          sudo grep -rl "packages.microsoft.com" /etc/apt/sources.list.d/ 2>/dev/null \
+            | sudo xargs -r rm -f || true
+          sudo apt-get update
+          sudo apt-get install -y unixodbc
       - name: Install dependencies
         run: pip install -r requirements.txt pytest pytest-asyncio httpx ruff
       - name: Lint (ruff)
