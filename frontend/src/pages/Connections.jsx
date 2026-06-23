@@ -69,6 +69,11 @@ export default function Connections() {
     finally { setBusy(null); }
   };
 
+  const disconnect = (name) => {
+    setConnected((m) => { const n = { ...m }; delete n[name]; return n; });
+    enqueueSnackbar(`Disconnected ${name}`, { variant: "info" });
+  };
+
   const confirmDelete = async () => {
     setDeleting(true);
     try {
@@ -111,32 +116,42 @@ export default function Connections() {
               const isBusy = busy === c.name;
               return (
                 <Card key={c.name}>
-                  <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
-                    <Storage color="primary" />
-                    <Box sx={{ flex: 1, minWidth: 180 }}>
-                      <Typography variant="subtitle2" fontWeight={700}>{c.name}</Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap>{c.server} / {c.database}</Typography>
+                  <CardContent sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1.5, rowGap: 1.5 }}>
+                    {/* Identity (grows/shrinks, truncates — never forces horizontal scroll) */}
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, flex: "1 1 240px", minWidth: 0 }}>
+                      <Storage color="primary" />
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="subtitle2" fontWeight={700} noWrap>{c.name}</Typography>
+                        <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>
+                          {c.server} / {c.database}
+                        </Typography>
+                      </Box>
                     </Box>
-                    <Chip size="small" variant="outlined" label={c.database_type === "fabric" ? "Fabric" : "Azure SQL"} />
-                    <Chip size="small" color={c.auth_mode === "sql" ? "warning" : "success"}
-                      label={c.auth_mode === "sql" ? "SQL auth" : "Service principal"} />
-                    <Chip size="small" icon={isConnected ? <CheckCircle /> : <LinkOff />}
-                      color={isConnected ? "success" : "default"} variant={isConnected ? "filled" : "outlined"}
-                      label={isConnected ? "Connected" : "Not connected"} />
+                    {/* Chips + actions: this group wraps below on narrow screens */}
+                    <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1, justifyContent: "flex-end" }}>
+                      <Chip size="small" variant="outlined" label={c.database_type === "fabric" ? "Fabric" : "Azure SQL"} />
+                      <Chip size="small" color={c.auth_mode === "sql" ? "warning" : "success"}
+                        label={c.auth_mode === "sql" ? "SQL auth" : "Service principal"} />
+                      <Chip size="small" icon={isConnected ? <CheckCircle /> : <LinkOff />}
+                        color={isConnected ? "success" : "default"} variant={isConnected ? "filled" : "outlined"}
+                        label={isConnected ? "Connected" : "Not connected"} />
 
-                    {!isConnected ? (
-                      <Button size="small" variant="contained" onClick={() => verify(c, { connecting: true })} disabled={isBusy}
-                        startIcon={isBusy ? <CircularProgress size={14} color="inherit" /> : <Power />}>Connect</Button>
-                    ) : (
-                      <>
-                        <Button size="small" onClick={() => verify(c)} disabled={isBusy}
-                          startIcon={isBusy ? <CircularProgress size={14} /> : <NetworkCheck />}>Test</Button>
-                        <Button size="small" onClick={load} startIcon={<Refresh />}>Refresh</Button>
-                      </>
-                    )}
-                    {canManage && (
-                      <Button size="small" color="error" startIcon={<Delete />} onClick={() => setDeleteTarget(c)}>Delete</Button>
-                    )}
+                      {!isConnected ? (
+                        <Button size="small" variant="contained" onClick={() => verify(c, { connecting: true })} disabled={isBusy}
+                          startIcon={isBusy ? <CircularProgress size={14} color="inherit" /> : <Power />}>Connect</Button>
+                      ) : (
+                        <>
+                          <Button size="small" onClick={() => verify(c)} disabled={isBusy}
+                            startIcon={isBusy ? <CircularProgress size={14} /> : <NetworkCheck />}>Test</Button>
+                          <Button size="small" onClick={load} startIcon={<Refresh />}>Refresh</Button>
+                          <Button size="small" color="inherit" onClick={() => disconnect(c.name)}
+                            startIcon={<LinkOff />}>Disconnect</Button>
+                        </>
+                      )}
+                      {canManage && (
+                        <Button size="small" color="error" startIcon={<Delete />} onClick={() => setDeleteTarget(c)}>Delete</Button>
+                      )}
+                    </Box>
                   </CardContent>
                 </Card>
               );

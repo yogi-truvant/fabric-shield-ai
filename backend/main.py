@@ -70,6 +70,19 @@ async def lifespan(app: FastAPI):
         version=settings.app_version,
         environment=settings.environment,
     )
+    # Client-readiness guards: surface insecure production configuration loudly.
+    if settings.environment == "production":
+        if settings.allowed_tenant_ids == "any":
+            logger.warning(
+                "fabricshield.config_warning",
+                issue="ALLOWED_TENANT_IDS is 'any' in production — ANY Entra tenant can sign in. "
+                      "Set it to your client tenant GUID(s).",
+            )
+        if settings.debug:
+            logger.warning(
+                "fabricshield.config_warning",
+                issue="DEBUG is true in production — API docs are exposed and host checks are off.",
+            )
     yield
     logger.info("fabricshield.shutdown")
 
