@@ -75,15 +75,45 @@ class CosmosStore:
             return int(value)
         return 0
 
-    async def delete_scans_for_connection(self, tenant_id: str, connection_name: str) -> int:
-        """Delete scan records for a connection (used when a connection is removed)."""
-        query = "SELECT c.id FROM c WHERE c.tenant_id = @tid AND c.connection_name = @conn"
-        params = [
-            {"name": "@tid", "value": tenant_id},
-            {"name": "@conn", "value": connection_name},
-        ]
+    async def delete_scans_for_connection(
+        self, tenant_id: str, connection_name: Optional[str] = None
+    ) -> int:
+        """Delete scan records — for one connection, or ALL of the tenant's if name is None
+        (full reset when the last connection is removed)."""
+        if connection_name:
+            query = "SELECT c.id FROM c WHERE c.tenant_id = @tid AND c.connection_name = @conn"
+            params = [
+                {"name": "@tid", "value": tenant_id},
+                {"name": "@conn", "value": connection_name},
+            ]
+        else:
+            query = "SELECT c.id FROM c WHERE c.tenant_id = @tid"
+            params = [{"name": "@tid", "value": tenant_id}]
         container = self._container(settings.cosmos_container_scans)
         ids = [item["id"] async for item in container.query_items(query=query, parameters=params)]
+        for _id in ids:
+            await container.delete_item(item=_id, partition_key=tenant_id)
+        return len(ids)
+
+    async def delete_orphan_approvals(self, tenant_id: str, live_connections: List[str]) -> int:
+        """Delete approval records that belong to no live connection (null/empty/stale
+        connection_name). Keeps the dashboard honest after a connection is removed."""
+        return await self._delete_orphans(settings.cosmos_container_approvals, tenant_id, live_connections)
+
+    async def delete_orphan_scans(self, tenant_id: str, live_connections: List[str]) -> int:
+        """Delete scan records that belong to no live connection."""
+        return await self._delete_orphans(settings.cosmos_container_scans, tenant_id, live_connections)
+
+    async def _delete_orphans(self, container_name: str, tenant_id: str, live_connections: List[str]) -> int:
+        container = self._container(container_name)
+        ids: List[str] = []
+        async for item in container.query_items(
+            query="SELECT c.id, c.connection_name FROM c WHERE c.tenant_id = @tid",
+            parameters=[{"name": "@tid", "value": tenant_id}],
+        ):
+            conn = item.get("connection_name")
+            if not conn or conn not in live_connections:
+                ids.append(item["id"])
         for _id in ids:
             await container.delete_item(item=_id, partition_key=tenant_id)
         return len(ids)

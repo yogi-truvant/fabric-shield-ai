@@ -191,13 +191,36 @@ async def delete_connection(name: str, user: Annotated[UserContext, Depends(get_
 
     await asyncio.get_event_loop().run_in_executor(None, _delete)
 
-    # Cascade: clear this connection's scans + approvals so the dashboard resets to 0.
-    # Audit records are intentionally preserved (immutable history).
-    store = CosmosStore()
-    approvals_removed = await store.delete_all_approvals_for_connection(user.tenant_id, name)
-    scans_removed = await store.delete_scans_for_connection(user.tenant_id, name)
+    # Which connections still exist for this tenant AFTER the delete above?
+    tpfx = f"tenant-{user.tenant_id}-"
 
-    logger.info("connections.deleted", tenant=user.tenant_id, name=name,
+    def _remaining_names() -> List[str]:
+        out = []
+        for p in kv.list_properties_of_secrets():
+            n = p.name or ""
+            if n.startswith(tpfx) and n.endswith("-server"):
+                out.append(n[len(tpfx):-len("-server")])
+        return out
+
+    try:
+        remaining = await asyncio.get_event_loop().run_in_executor(None, _remaining_names)
+    except Exception:  # noqa: BLE001 — if listing fails, fall back to a clean reset
+        remaining = []
+
+    # Cascade: clear scans + approvals so the dashboard resets. Audit is preserved (immutable).
+    store = CosmosStore()
+    if not remaining:
+        # Last connection removed → full fresh state: wipe ALL approvals + scans for the tenant.
+        approvals_removed = await store.delete_all_approvals_for_connection(user.tenant_id, None)
+        scans_removed = await store.delete_scans_for_connection(user.tenant_id, None)
+    else:
+        # Other connections remain → drop this one's records, plus any orphaned/stale ones.
+        approvals_removed = await store.delete_all_approvals_for_connection(user.tenant_id, name)
+        approvals_removed += await store.delete_orphan_approvals(user.tenant_id, remaining)
+        scans_removed = await store.delete_scans_for_connection(user.tenant_id, name)
+        scans_removed += await store.delete_orphan_scans(user.tenant_id, remaining)
+
+    logger.info("connections.deleted", tenant=user.tenant_id, name=name, remaining=len(remaining),
                 approvals_removed=approvals_removed, scans_removed=scans_removed)
-    return {"status": "deleted", "name": name,
+    return {"status": "deleted", "name": name, "remaining_connections": len(remaining),
             "approvals_removed": approvals_removed, "scans_removed": scans_removed}

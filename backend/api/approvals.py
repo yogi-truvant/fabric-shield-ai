@@ -269,7 +269,7 @@ async def _unmask_record(store, audit, user, record):
         return False, "Approval has no connection_name; re-run the scan."
     engine = MaskingEngine(tenant_id=user.tenant_id)
     loop = asyncio.get_event_loop()
-    ok = await loop.run_in_executor(
+    ok, err = await loop.run_in_executor(
         None,
         lambda: engine.drop_mask(
             connection_name=record.connection_name, db_type=record.database_type,
@@ -284,8 +284,8 @@ async def _unmask_record(store, audit, user, record):
         await audit.log(AuditAction.masking_removed, actor=user, resource_id=record.approval_id, details=details)
         return True, None
     await audit.log(AuditAction.masking_removed, actor=user, resource_id=record.approval_id,
-                    details=details, success=False)
-    return False, "Drop mask failed"
+                    details={**details, "error": err}, success=False)
+    return False, err or "Drop mask failed"
 
 
 @router.post(

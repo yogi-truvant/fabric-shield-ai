@@ -157,8 +157,13 @@ class MaskingEngine:
         schema: str,
         table: str,
         column: str,
-    ) -> bool:
-        """Remove DDM from a column (admin operation)."""
+    ) -> "tuple[bool, str | None]":
+        """Remove DDM from a column (admin operation).
+
+        Returns (ok, error). On failure `error` carries the real SQL/connection
+        message so it can be surfaced in the UI and audit log instead of a generic
+        'failed'. If the column already has no mask, that is treated as success
+        (idempotent) — the desired end state is 'not masked'."""
         ddl = _build_drop_mask_sql(schema, table, column)
         try:
             self._connector.execute_ddl(connection_name, db_type, ddl)
@@ -169,10 +174,19 @@ class MaskingEngine:
                 table=table,
                 column=column,
             )
-            return True
+            return True, None
         except Exception as exc:  # noqa: BLE001
-            logger.error("masking_engine.drop_failed", error=str(exc))
-            return False
+            msg = str(exc)
+            # "DROP MASKED" fails if the column isn't masked — our goal is already met.
+            low = msg.lower()
+            if "is not masked" in low or "not currently masked" in low or "no masking function" in low:
+                logger.info("masking_engine.drop_noop", schema=schema, table=table, column=column)
+                return True, None
+            logger.error(
+                "masking_engine.drop_failed",
+                tenant_id=self.tenant_id, schema=schema, table=table, column=column, error=msg,
+            )
+            return False, msg
 
     def verify_mask_applied(
         self,

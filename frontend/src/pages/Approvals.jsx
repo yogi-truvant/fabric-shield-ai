@@ -89,8 +89,10 @@ export default function Approvals() {
       if (d.processed === 0) {
         enqueueSnackbar(`Nothing to ${verb} in the selected rows`, { variant: "info" });
       } else {
-        enqueueSnackbar(`${d.succeeded} ${verb}${verb.endsWith("e") ? "d" : "ed"}, ${d.failed} failed`,
-          { variant: d.failed > 0 ? "warning" : "success" });
+        const reason = d.failed > 0 && d.errors?.length ? ` — ${d.errors[0].error}` : "";
+        enqueueSnackbar(
+          `${d.succeeded} ${verb}${verb.endsWith("e") ? "d" : "ed"}, ${d.failed} failed${reason}`,
+          { variant: d.failed > 0 ? "warning" : "success", autoHideDuration: d.failed > 0 ? 9000 : 4000 });
       }
       setSelected([]);
       load();
