@@ -47,18 +47,19 @@ def _get(name: str) -> Optional[str]:
         return None
 
 
-def _purge_if_soft_deleted(kv: SecretClient, name: str) -> None:
-    """Key Vault soft-delete keeps a deleted secret's NAME reserved until it is purged
-    or recovered. Before (re)writing a secret, purge any soft-deleted version with the
-    same name so connection names can be reused after a delete. No-op if not deleted, or
-    if the vault has purge-protection / the identity lacks purge rights (logged)."""
+def _reclaim_if_soft_deleted(kv: SecretClient, name: str) -> None:
+    """Key Vault soft-delete reserves a deleted secret's NAME until it is purged or
+    recovered. Purge-protected vaults FORBID purge for the full retention window, so we
+    RECOVER the soft-deleted secret instead — the name (and a version) come back and the
+    caller then writes the new value over it. This makes connection names reusable after
+    a delete on any vault. No-op if the name is not in a soft-deleted state."""
     try:
-        kv.purge_deleted_secret(name)
-        logger.info("connections.purged_soft_deleted", secret=name)
+        kv.begin_recover_deleted_secret(name).wait()
+        logger.info("connections.recovered_soft_deleted", secret=name)
     except ResourceNotFoundError:
-        pass  # not in a soft-deleted state — nothing to purge
-    except HttpResponseError as exc:  # purge-protection on, or missing purge permission
-        logger.warning("connections.purge_skipped", secret=name, error=str(exc))
+        pass  # not soft-deleted — nothing to reclaim
+    except HttpResponseError as exc:  # missing recover rights, etc. — surfaced to caller via set_secret
+        logger.warning("connections.recover_skipped", secret=name, error=str(exc))
 
 
 @router.get("/connections", response_model=List[ConnectionInfo], dependencies=[RequireAnalyst])
@@ -139,9 +140,10 @@ async def create_connection(
     }
 
     def _write():
-        # Reuse a name that was previously deleted: clear any soft-deleted leftovers first.
+        # Reuse a name that was previously deleted: recover any soft-deleted version first
+        # so set_secret writes a new value over it instead of hitting a name conflict.
         for suffix in ("-server", "-database", "-meta", "-sqlpassword"):
-            _purge_if_soft_deleted(kv, f"{pfx}{suffix}")
+            _reclaim_if_soft_deleted(kv, f"{pfx}{suffix}")
         kv.set_secret(f"{pfx}-server", req.server)
         kv.set_secret(f"{pfx}-database", req.database)
         kv.set_secret(f"{pfx}-meta", json.dumps(meta))
@@ -200,18 +202,13 @@ async def delete_connection(name: str, user: Annotated[UserContext, Depends(get_
     kv = _kv_client()
 
     def _delete():
+        # Soft-delete only. The name is reclaimed on the next create via recover (works even
+        # with purge-protection on). We don't purge here — purge-protected vaults forbid it.
         for suffix in ("-server", "-database", "-meta", "-sqlpassword"):
-            secret = f"{pfx}{suffix}"
             try:
-                poller = kv.begin_delete_secret(secret)
-                # Wait for soft-delete to settle, then purge so the name is reusable now.
-                try:
-                    poller.wait(timeout=30)
-                except Exception:  # noqa: BLE001 — poller timeout shouldn't block the API
-                    pass
+                kv.begin_delete_secret(f"{pfx}{suffix}")
             except ResourceNotFoundError:
-                continue
-            _purge_if_soft_deleted(kv, secret)
+                pass
 
     await asyncio.get_event_loop().run_in_executor(None, _delete)
 
