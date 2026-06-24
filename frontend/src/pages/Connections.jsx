@@ -18,6 +18,13 @@ import { useRole } from "../hooks/useRole";
 
 const BLANK = { name: "", server: "", database: "", database_type: "azure_sql", auth_mode: "service_principal", sql_username: "", sql_password: "" };
 
+// Remember which connections were verified, so the "Connected" badge survives tab
+// switches / navigation within the session (component state alone is lost on remount).
+const CONN_KEY = "fsai_connected_v1";
+const loadConnected = () => {
+  try { return JSON.parse(sessionStorage.getItem(CONN_KEY) || "{}"); } catch { return {}; }
+};
+
 export default function Connections() {
   const { accounts } = useMsal();
   const { hasRole } = useRole();
@@ -29,11 +36,16 @@ export default function Connections() {
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [busy, setBusy] = useState(null);           // connection name currently testing/connecting
-  const [connected, setConnected] = useState({});   // name -> true once verified this session
+  const [busy, setBusy] = useState(null);                      // connection name currently testing/connecting
+  const [connected, setConnected] = useState(loadConnected);   // name -> true once verified (persisted)
   const [form, setForm] = useState(BLANK);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Persist verified state across navigation/tab switches.
+  useEffect(() => {
+    try { sessionStorage.setItem(CONN_KEY, JSON.stringify(connected)); } catch { /* ignore */ }
+  }, [connected]);
 
   const load = useCallback(() => {
     setLoading(true);
